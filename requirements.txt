@@ -1,0 +1,8 @@
+torch
+gymnasium; python_version>='3.8'
+gym; python_version<'3.8'
+numpy
+matplotlib
+imageio
+pygame  # needed for gymnasium classic-control human rendering (CartPole)
+# Alternatively you can install extras: pip install "gymnasium[classic-control]"

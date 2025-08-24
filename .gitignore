@@ -1,0 +1,68 @@
+__pycache__
+.vscode
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+env/
+venv/
+ENV/
+.venv/
+myenv/
+.conda/
+envs/
+
+# Conda environment files
+*.conda
+
+# Packaging
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# PyTorch / model artifacts and run outputs
+*.pt
+*.pth
+*.ckpt
+**/runs/
+**/runs/*
+
+# Media and recordings
+*.mp4
+*.gif
+*.avi
+*.mov
+*.mkv
+
+# Logs and debug
+*.log
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
+
+# IDE/editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+*.pem
+*.key
+secrets.json
+
+# Testing / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Wheels
+*.whl
