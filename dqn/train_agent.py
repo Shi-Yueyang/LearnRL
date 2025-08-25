@@ -14,12 +14,10 @@ import gymnasium as gym  # Gymnasium-only (simplified, no legacy gym fallback)
 class Config:
     # Hard-coded training configuration (was previously provided by argparse)
     env_id: str = "CartPole-v1"
-    device: str = "auto"
     seed: int = 42
-    updates: int = 1000
+    updates: int = 200
     episodes_per_update: int = 10
-    batch_envs: int = 1
-    max_episode_steps: int = 500
+    max_episode_steps: int = 2000
     gamma: float = 0.99
     lr: float = 1e-3
     buffer_size: int = 50_000
@@ -32,16 +30,10 @@ class Config:
     min_buffer: int = 1000
     save_dir: str = "runs"
     save_every: int = 1000
+    log_interval: int = 200
 
     def as_dict(self):
         return self.__dict__.copy()
-
-
-def select_device(name: str) -> torch.device:
-    if name == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device("cuda" if name == "cuda" else "cpu")
-
 
 class MLP(nn.Module):
     def __init__(self, in_dim: int, out_dim: int):
@@ -104,29 +96,6 @@ class ReplayBuffer:
         )
 
 
-def make_envs(env_id: str, batch_envs: int, seed: int, max_steps: Optional[int]):
-    """Create (vector) environment(s) using Gymnasium only.
-
-    Always returns an environment whose reset() returns (obs, info) and step()
-    returns (obs, reward, terminated, truncated, info).
-    """
-    if batch_envs > 1:
-
-        def env_fn():
-            e = gym.make(env_id)
-            if max_steps:
-                e = gym.wrappers.TimeLimit(e, max_episode_steps=max_steps)
-            e.reset(seed=seed)
-            return e
-
-        return gym.vector.AsyncVectorEnv([env_fn for _ in range(batch_envs)])
-    env = gym.make(env_id)
-    if max_steps:
-        env = gym.wrappers.TimeLimit(env, max_episode_steps=max_steps)
-    env.reset(seed=seed)
-    return env
-
-
 def linear_epsilon(step: int, start: float, end: float, decay_updates: int) -> float:
     if decay_updates <= 0:
         return end
@@ -136,30 +105,35 @@ def linear_epsilon(step: int, start: float, end: float, decay_updates: int) -> f
 
 def main():
     cfg = Config()
-    device = select_device(cfg.device)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(cfg.save_dir, exist_ok=True)
 
     rng = np.random.default_rng(cfg.seed)
     torch.manual_seed(cfg.seed)
 
-    env = make_envs(cfg.env_id, cfg.batch_envs, cfg.seed, cfg.max_episode_steps)
-    if cfg.batch_envs > 1:
-        single_obs_space = env.single_observation_space
-        single_act_space = env.single_action_space
-    else:
-        single_obs_space = env.observation_space
-        single_act_space = env.action_space
-
-    assert (
-        len(single_obs_space.shape) == 1
-    ), "This minimal DQN only supports flat observation spaces"
-    assert hasattr(
-        single_act_space, "n"
-    ), "This minimal DQN only supports discrete action spaces"
+    env = gym.make(cfg.env_id)
+    env = gym.wrappers.TimeLimit(env, max_episode_steps= cfg.max_episode_steps)
+    
+    single_obs_space = env.observation_space
+    single_act_space = env.action_space
 
     obs_dim = single_obs_space.shape[0]
     n_actions = single_act_space.n
     policy = MLP(obs_dim, n_actions).to(device)
+    best_mean_return = -1e9
+    
+    try:
+        ckpt = torch.load(
+            os.path.join("runs", "best.pt"), map_location="cpu", weights_only=True
+        )
+        policy.load_state_dict(ckpt.get("model"))
+        policy.to(device)
+        policy.eval()
+        best_mean_return = ckpt.get("mean_return", best_mean_return)
+        print(f"Loaded model with mean return {best_mean_return:.2f}")
+    except:
+        pass
+
     target = MLP(obs_dim, n_actions).to(device)
     target.load_state_dict(policy.state_dict())
     optimizer = torch.optim.Adam(policy.parameters(), lr=cfg.lr)
@@ -167,14 +141,10 @@ def main():
     buffer = ReplayBuffer(cfg.buffer_size, (obs_dim,))
 
     update = 0
-    best_mean_return = -1e9
 
-    # Initialize observations (Gymnasium API)
     obs, _ = env.reset(seed=cfg.seed)
 
-    episode_returns = np.zeros(
-        cfg.batch_envs if cfg.batch_envs > 1 else 1, dtype=np.float32
-    )
+    episode_returns = np.zeros(1, dtype=np.float32)
     episode_lengths = np.zeros_like(episode_returns)
     recent_returns: Deque[float] = Deque(maxlen=100)
 
@@ -187,70 +157,40 @@ def main():
             eps = linear_epsilon(
                 update, cfg.start_eps, cfg.end_eps, cfg.eps_decay_updates
             )
-            if cfg.batch_envs > 1:
-                obs_tensor = torch.from_numpy(obs).float().to(device)
-                with torch.no_grad():
-                    q_values = policy(obs_tensor)
-                greedy_actions = torch.argmax(q_values, dim=1).cpu().numpy()
-                random_mask = rng.random(size=greedy_actions.shape[0]) < eps
-                random_actions = rng.integers(
-                    0, n_actions, size=greedy_actions.shape[0]
-                )
-                actions = np.where(random_mask, random_actions, greedy_actions)
-                next_obs, rewards, terminated, truncated, _ = env.step(actions)
-                dones = np.logical_or(terminated, truncated)
-                for i in range(len(actions)):
-                    buffer.add(
-                        Transition(
-                            obs[i].copy(),
-                            int(actions[i]),
-                            float(rewards[i]),
-                            next_obs[i].copy(),
-                            bool(dones[i]),
-                        )
-                    )
-                episode_returns += rewards
-                episode_lengths += 1
-                finished = np.where(dones)[0]
-                for idx in finished:
-                    recent_returns.append(float(episode_returns[idx]))
-                    episode_returns[idx] = 0.0
-                    episode_lengths[idx] = 0
-                    collected_episodes += 1
-                obs = next_obs
-            else:
-                obs_tensor = (
-                    torch.from_numpy(np.array(obs)).float().unsqueeze(0).to(device)
-                )
-                with torch.no_grad():
-                    q_values = policy(obs_tensor)
-                action = (
-                    int(rng.integers(0, n_actions))
-                    if rng.random() < eps
-                    else int(torch.argmax(q_values, dim=1).item())
-                )
-                next_obs, reward, terminated, truncated, _ = env.step(action)
-                done = terminated or truncated
-                buffer.add(
-                    Transition(
-                        np.array(obs, dtype=np.float32),
-                        action,
-                        float(reward),
-                        np.array(next_obs, dtype=np.float32),
-                        bool(done),
-                    )
-                )
-                episode_returns[0] += reward
-                episode_lengths[0] += 1
 
-                if done:
-                    recent_returns.append(float(episode_returns[0]))
-                    episode_returns[0] = 0.0
-                    episode_lengths[0] = 0
-                    collected_episodes += 1
-                    obs, _ = env.reset()
-                else:
-                    obs = next_obs
+            obs_tensor = (
+                torch.from_numpy(np.array(obs)).float().unsqueeze(0).to(device)
+            )
+            with torch.no_grad():
+                q_values = policy(obs_tensor)
+            action = (
+                int(rng.integers(0, n_actions))
+                if rng.random() < eps
+                else int(torch.argmax(q_values, dim=1).item())
+            )
+            next_obs, reward, terminated, truncated, _ = env.step(action)
+
+            done = terminated or truncated
+            buffer.add(
+                Transition(
+                    np.array(obs, dtype=np.float32),
+                    action,
+                    float(reward),
+                    np.array(next_obs, dtype=np.float32),
+                    bool(done),
+                )
+            )
+            episode_returns[0] += reward
+            episode_lengths[0] += 1
+
+            if done:
+                recent_returns.append(float(episode_returns[0]))
+                episode_returns[0] = 0.0
+                episode_lengths[0] = 0
+                collected_episodes += 1
+                obs, _ = env.reset()
+            else:
+                obs = next_obs
 
         if len(buffer) >= cfg.min_buffer:
             for _ in range(cfg.train_iters_per_update):
@@ -275,10 +215,12 @@ def main():
             target.load_state_dict(policy.state_dict())
 
         mean_return = float(np.mean(recent_returns)) if recent_returns else 0.0
-        wall = time.time() - start_time
-        print(
-            f"Update {update+1}/{cfg.updates} | Episodes {len(recent_returns)} (window) | MeanReturn {mean_return:.2f} | Buffer {len(buffer)} | Eps {linear_epsilon(update, cfg.start_eps, cfg.end_eps, cfg.eps_decay_updates):.3f} | Time {wall:.1f}s"
-        )
+        if update % cfg.log_interval == 0:
+
+            wall = time.time() - start_time
+            print(
+                f"Update {update+1}/{cfg.updates} | Episodes {len(recent_returns)} (window) | MeanReturn {mean_return:.2f} | Buffer {len(buffer)} | Eps {linear_epsilon(update, cfg.start_eps, cfg.end_eps, cfg.eps_decay_updates):.3f} | Time {wall:.1f}s"
+            )
 
         if mean_return > best_mean_return and recent_returns:
             best_mean_return = mean_return
@@ -292,6 +234,7 @@ def main():
                 },
                 os.path.join(cfg.save_dir, "best.pt"),
             )
+            print(f"New best newn return {best_mean_return: .2f}")
 
         if (update + 1) % cfg.save_every == 0:
             torch.save(

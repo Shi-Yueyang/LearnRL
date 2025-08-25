@@ -1,74 +1,63 @@
 import os
-import time
-from dataclasses import dataclass
-from typing import Optional
-from train_agent import PolicyNet
-
-import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import gymnasium as gym
+import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation
 
+from train_agent import Actor, Config, SAVE_FILE
 
-CHECKPOINT_PATH = "best.pt"
 ANIMATION_FPS = 30
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
-
-def build_model(ckpt: dict):
+def build_actor(ckpt: dict):
     cfg = ckpt.get("cfg", {})
-    env_id = cfg.get("env_id", "CartPole-v1")
+    env_id = cfg.get("env_id", "Pendulum-v1")
     temp_env = gym.make(env_id)
     obs_space = temp_env.observation_space
     act_space = temp_env.action_space
     obs_dim = obs_space.shape[0]
-    n_actions = act_space.n
-    model = PolicyNet(obs_dim, n_actions).to(device)
-    model.load_state_dict(ckpt.get("model"))
+    act_dim = act_space.shape[0]
+    act_high = act_space.high
+    model = Actor(obs_dim, act_dim, act_high)
+    model.load_state_dict(ckpt.get("actor"))
     model.eval()
     temp_env.close()
     return model, env_id
 
 
 def main():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ckpt = torch.load(
-        os.path.join("runs", CHECKPOINT_PATH), map_location="cpu", weights_only=True
+        os.path.join("runs", SAVE_FILE), map_location="cpu", weights_only=False
     )
-    policy, env_id = build_model(ckpt)
+    actor, env_id = build_actor(ckpt)
+    actor.to(device)
+
     env = gym.make(env_id, render_mode="rgb_array")
-    print(f"Loaded {CHECKPOINT_PATH} | Env: {env_id}")
+    print(f"Loaded {SAVE_FILE} | Env: {env_id}")
     frames = []
     obs, _ = env.reset()
     done = False
-
     while not done:
         frames.append(env.render())
         obs_tensor = torch.from_numpy(np.array(obs)).float().unsqueeze(0).to(device)
-        logits = policy(obs_tensor)
-        probs = F.softmax(logits, dim=-1)
-        dist = torch.distributions.Categorical(probs=probs)
-        action = dist.sample()
-        obs, _, terminated, truncated, _ = env.step(int(action.item()))
+        with torch.no_grad():
+            action = actor(obs_tensor).cpu().numpy()[0]
+        obs, _, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
 
     env.close()
     os.makedirs("runs", exist_ok=True)
-    anim_path = os.path.join("runs", f"{CHECKPOINT_PATH}.gif")
-
+    anim_path = os.path.join("runs", "episode_animation.gif")
     fig, ax = plt.subplots()
     ax.axis("off")
     im = ax.imshow(frames[0])
 
     def animate(i):
-        im.set_data(frames[i])  # update pixel data only
+        im.set_data(frames[i])
         return (im,)
 
-    # blit=True makes updates cheaper; cache_frame_data=False avoids storing every frame twice
     ani = animation.FuncAnimation(
         fig,
         animate,
@@ -82,7 +71,7 @@ def main():
     ani.save(anim_path, fps=ANIMATION_FPS, writer="pillow")
 
 
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
     main()

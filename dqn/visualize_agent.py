@@ -8,7 +8,7 @@ import numpy as np
 # --- Configuration ---
 CHECKPOINT_PATH = os.path.join("runs", "best.pt")
 ANIMATION_FPS = 30
-DEVICE = "auto" # "auto" | "cpu" | "cuda"
+DEVICE = "auto" 
 
 def select_device(name: str) -> torch.device:
     if name == "auto":
@@ -37,8 +37,6 @@ def build_model_from_ckpt(ckpt: dict):
 def main():
     device = select_device(DEVICE)
     ckpt =  torch.load(CHECKPOINT_PATH, map_location="cpu", weights_only=True)
-    if ckpt is None:
-        return
     model, env_id = build_model_from_ckpt(ckpt)
     model.to(device)
 
@@ -55,14 +53,13 @@ def main():
         with torch.no_grad():
             action = model(obs_tensor).argmax(1).item()
         
-        step_out = env.step(action)
-        obs, _, terminated, truncated, _ = step_out
+        obs, _, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
 
     env.close()
 
     os.makedirs('runs', exist_ok=True)
-    anim_path = os.path.join('runs', 'episode_animation.mp4')
+    anim_path = os.path.join('runs', 'episode_animation.gif')
 
     # Faster animation: reuse a single AxesImage instead of creating a new one per frame.
     fig, ax = plt.subplots()
@@ -84,7 +81,7 @@ def main():
         cache_frame_data=False,
     )
     print('Animation created successfully.')
-    ani.save(anim_path, fps=ANIMATION_FPS, writer='ffmpeg')
+    ani.save(anim_path, fps=ANIMATION_FPS, writer='pillow')
 
 
 if __name__ == "__main__":
