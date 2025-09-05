@@ -5,6 +5,7 @@ from train import Train
 from track import Track
 from typing import Callable, Dict, Any
 import matplotlib.pyplot as plt
+from typing import Literal
 
 
 class ConstSpeedEnv(gym.Env):
@@ -41,7 +42,8 @@ class ConstSpeedEnv(gym.Env):
 
         self.train = Train(options["train_coeffs"])
         self.track = Track(options["track_layout"])
-        self.target_speed = options.get("target_speed", 20.0)  # m/s
+        self.target_speeds = options.get("target_speeds", 25.0)  # m/s
+
         self.at_target_counter = 0
         self.steps = 0
 
@@ -80,6 +82,31 @@ class ConstSpeedEnv(gym.Env):
 
         return observation, reward, terminated, truncated, info
 
+    def get_target_speed(self):
+        pos, vel, acc, time = self.state
+
+        if isinstance(self.target_speeds, dict):
+            if "positions" in self.target_speeds:
+                target_speed = np.interp(
+                    pos,
+                    self.target_speeds["positions"],
+                    self.target_speeds["speeds"],
+                    left=self.target_speeds["speeds"][0],
+                    right=self.target_speeds["speeds"][-1],
+                ).astype(np.float32)
+
+            elif "times" in self.target_speeds:
+                target_speed = np.interp(
+                    time,
+                    self.target_speeds["times"],
+                    self.target_speeds["speeds"],
+                    left=self.target_speeds["speeds"][0],
+                    right=self.target_speeds["speeds"][-1],
+                ).astype(np.float32)
+        else:
+            target_speed = self.target_speeds
+        return target_speed
+
     def _update_state(self, action: float):
         """Update the environment state based on action"""
         # Example state update logic - replace with your dynamics
@@ -92,22 +119,20 @@ class ConstSpeedEnv(gym.Env):
         """Get current observation"""
         # Return velocity error instead of acceleration
         pos, vel, acc, time = self.state
-        velocity_error = vel - self.target_speed
+        target_speed = self.get_target_speed()
+        velocity_error = vel - target_speed
         return np.array([velocity_error], dtype=np.float32)
 
     def _calculate_reward(self, action):
         pos, vel, acc, time = self.state
 
         # Normalized velocity tracking error
-        velocity_error = abs(vel - self.target_speed)
+        target_speed = self.get_target_speed()
+
+        velocity_error = abs(vel - target_speed)
         velocity_reward = -velocity_error
-
-        # Small bonus for reaching near target
-        if velocity_error < 1.0:
-            velocity_reward += 10.0
-        if vel > 0:
-            velocity_reward += 2
-
+        if target_speed > 1e-3:
+            velocity_reward = velocity_reward / target_speed * 2
 
         return velocity_reward
 
@@ -119,7 +144,8 @@ class ConstSpeedEnv(gym.Env):
 
     def _is_truncated(self):
         pos, vel, acc, time = self.state
-        if vel > self.target_speed * 3:
+        target_speed = self.get_target_speed()
+        if vel > target_speed * 3:
             return True
         return False
 
@@ -141,40 +167,58 @@ class ConstSpeedEnv(gym.Env):
         pass
 
 
-def visualize_control_law(result: Dict[str, list]):
+def visualize_control_law(result: Dict[str, list], x_axes="time"):
     plt.style.use("dark_background")
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(12, 4))
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 7))
+    ep_return = sum(result["reward_history"])
+
+    # Determine x-axis data based on x_axes parameter
+    x_data = result["time_history"] if x_axes == "time" else result["pos_history"]
+
     # Position, Velocity, Acceleration plots
     plots = [
         (
             ax1,
             [
-                (result["time_history"], result["vel_history"], "lime", "vel"),
+                (x_data, result["vel_history"], "lime", "vel"),
+                (
+                    x_data,
+                    result["target_vel_history"],
+                    "orange",
+                    "target vel",
+                ),
             ],
             "vel (m/s)",
         ),
         (
             ax2,
             [
-                (result["time_history"], result["action_history"], "orange", "action"),
+                (x_data, result["acc_history"], "lime", "acc"),
             ],
-            "Control",
+            "acc (m/s2)",
         ),
         (
             ax3,
             [
-                (result["time_history"], result["reward_history"], "orange", "reward"),
+                (x_data, result["action_history"], "orange", "action"),
             ],
-            "Reward",
+            "Control",
+        ),
+        (
+            ax4,
+            [
+                (x_data, result["reward_history"], "orange", "reward"),
+            ],
+            f"Reward (ep_ret={ep_return:.2f})",
         ),
     ]
 
-    for ax, datas, ylabel in plots:
+    for ax, datas, title in plots:
         for data in datas:
             ax.plot(data[0], data[1], color=data[2], label=data[3])
-        ax.set_title(f"{ylabel.split()[0]} over Time", color="white")
-        ax.set_xlabel("Time (s)", color="white")
-        ax.set_ylabel(ylabel, color="white")
+        ax.set_title(title, color="white")
+        ax.set_xlabel("Time (s)" if x_axes == "time" else "Position (m)", color="white")
+        ax.set_ylabel(title, color="white")
         ax.grid(True, linestyle="--", alpha=0.6)
         ax.tick_params(colors="white")
         ax.legend()
@@ -189,35 +233,49 @@ def test_control_law(
     control_law: Callable[[np.ndarray], np.ndarray],
     steps: int = 100,
     is_render: bool = True,
+    x_axes: Literal["time", "pos"] = "time",
 ) -> Dict[str, list]:
+    obs, info = env.reset(seed=42, options=env_option)
+
+    pos_history = []
     vel_err_history = []
     vel_history = []
+    target_vel_history = []
     time_history = []
     action_history = []
     reward_history = []
-    obs, info = env.reset(seed=42, options=env_option)
+    acc_history = []
+
     for i in range(steps):
         # Get action from the control law
-        action = control_law(obs)
+        action = control_law(obs) if i > 0 else np.array([0.0])
         obs, reward, terminated, truncated, info = env.step(action)
-        
-        state = env.state # pos vel acc time
+
+        target_speed = env.get_target_speed()
+
+        state = env.state  # pos vel acc time
         vel_err_history.append(float(obs))
         vel_history.append(state[1])
-        time_history.append(i)
-        action_history.append(action)
+        target_vel_history.append(target_speed)
+        acc_history.append(state[2])
+        time_history.append(state[3])
+        action_history.append(action[0])
         reward_history.append(reward)
-        if terminated or truncated:
+        pos_history.append(state[0])
+        if truncated:
             break
     result = {
+        "pos_history": pos_history,
         "vel_err_history": vel_err_history,
         "vel_history": vel_history,
+        "target_vel_history": target_vel_history,
+        "acc_history": acc_history,
         "time_history": time_history,
         "action_history": action_history,
         "reward_history": reward_history,
     }
     if is_render:
-        visualize_control_law(result)
+        visualize_control_law(result, x_axes)
     return result
 
 
