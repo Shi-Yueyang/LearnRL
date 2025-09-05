@@ -2,7 +2,7 @@ import random
 import math
 
 class Track:
-    def __init__(self, layout):
+    def __init__(self, track_layout):
         """
         Initialize track with layout and physical coefficients.
         
@@ -10,7 +10,7 @@ class Track:
             layout (list): List of track segments with length, gradient, and curve_radius
         """
         
-        self.layout = layout
+        self.track_layout = track_layout
         self.current_segment_index = 0
         self.segment_position = 0.0
         
@@ -32,7 +32,7 @@ class Track:
         """Pre-compute cumulative distances for efficient binary search."""
         cumulative = []
         total = 0.0
-        for segment in self.layout:
+        for segment in self.track_layout:
             total += segment['length']
             cumulative.append(total)
         return cumulative
@@ -51,7 +51,7 @@ class Track:
             return 0
         
         if position >= self.total_length:
-            return len(self.layout)
+            return len(self.track_layout)
         
         left, right = 0, len(self._cumulative_distances) - 1
         
@@ -71,7 +71,7 @@ class Track:
                 else:
                     left = mid + 1
         
-        return len(self.layout)
+        return len(self.track_layout)
     
     def reset(self):
         """Reset track position to start."""
@@ -138,8 +138,8 @@ class Track:
         # Use binary search for efficiency
         segment_idx = self._binary_search_segment(absolute_position)
         
-        if segment_idx >= len(self.layout):
-            self.current_segment_index = len(self.layout)
+        if segment_idx >= len(self.track_layout):
+            self.current_segment_index = len(self.track_layout)
             return False
         
         self.current_segment_index = segment_idx
@@ -167,10 +167,10 @@ class Track:
             if not self.update_position(train_position):
                 return None
         
-        if self.current_segment_index >= len(self.layout):
+        if self.current_segment_index >= len(self.track_layout):
             return None
             
-        segment = self.layout[self.current_segment_index]
+        segment = self.track_layout[self.current_segment_index]
         return {
             'gradient': segment['gradient'],
             'curve_radius': segment['curve_radius'],
@@ -192,4 +192,11 @@ class Track:
     
     def is_end_of_track(self):
         """Check if at end of track."""
-        return self.current_segment_index >= len(self.layout)
+        return self.current_segment_index >= len(self.track_layout)
+
+default_track_layout = [
+    {"length": 5000, "gradient": 0.0, "curve_radius": 100},
+    {"length": 2000, "gradient": 1.5, "curve_radius": 500.0},
+    {"length": 3000, "gradient": -1.0, "curve_radius": None},
+    {"length": 1000, "gradient": 0.0, "curve_radius": 300.0},
+]

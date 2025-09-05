@@ -1,16 +1,14 @@
 import math
 import matplotlib.pyplot as plt
-from track import Track
 
 class Train:
-    def __init__(self, mass):
+    def __init__(self, params):
         """
         Initializes the Train object with a given mass.
         
         Args:
             mass (float): The total mass of the train in kg.
         """
-        self.m = mass
         self.position = 0.0
         self.velocity = 0.0
         self.acceleration = 0.0
@@ -21,13 +19,14 @@ class Train:
         self.rho = 1.225  # kg/m^3
         
         # Train-specific parameters
-        self.A = 12.0  # m^2
-        self.Cd = 1.2
-        self.c1 = 0.1  # N/kg
-        self.c2 = 0.01 # Ns/kgm
-        self.c3 = 0.0003 # Ns^2/kgm^2
-        self.max_brake_force = 100000.0  # N
-        self.max_tractive_force = 200000.0 # N
+        self.m = params['mass']
+        self.A = params['frontal_area']  # Frontal Area m^2
+        self.Cd = params['drag_coefficient']  # Drag Coefficient
+        self.c1 = params['c1']  # N/kg
+        self.c2 = params['c2'] # Ns/kgm
+        self.c3 = params['c3'] # Ns^2/kgm^2
+        self.max_brake_force = params['max_brake_force']  # N
+        self.max_tractive_force = params['max_tractive_force'] # N
         
     def calculate_tractive_effort(self, throttle_input):
 
@@ -40,7 +39,7 @@ class Train:
         curve_resistance_coeff = track_props['curve_resistance_coeff']
 
         # Rolling Resistance (Davis Equation)
-        f_rolling = self.m * (self.c1 + self.c2 * velocity + self.c3 * velocity**2)
+        f_rolling = self.c1 + self.c2 * velocity + self.c3 * velocity**2
         
         # Aerodynamic Drag (base aerodynamic resistance without wind)
         f_drag = 0.5 * self.rho * self.A * self.Cd * velocity**2
@@ -59,9 +58,18 @@ class Train:
         
         return f_rolling + f_drag + f_wind + f_gravity + f_curve
 
-    def update_dynamics(self, dt, throttle_input, brake_input, track_props, track):
+    def update_dynamics(self, dt, action, track):
         """Update train dynamics based on control inputs and track properties."""
         # Calculate forces
+        if action>0:
+            throttle_input = action
+            brake_input = 0
+        else:
+            brake_input = -action
+            throttle_input = 0
+        track_props = track.get_current_properties(self.position)
+        if track_props is None:
+            return self.time, self.position, self.velocity, self.acceleration
         f_tractive = self.calculate_tractive_effort(throttle_input)
         f_resistance = self.calculate_resistance_forces(self.velocity, track_props, track)
         f_braking = brake_input * self.max_brake_force
@@ -82,7 +90,20 @@ class Train:
 
         return self.time, self.position, self.velocity, self.acceleration
 
+high_speed_train_params_test = {
+    'mass': 360_000,          # 10,000 metric tons (10^7 kg)
+    'frontal_area': 20,         # 20 m^2
+    'drag_coefficient': 0.9,    # High drag
+    'c1': 2700,                  # Rolling resistance is significant
+    'c2': 100,                 # Velocity-based resistance is low
+    'c3': 7.1,            # Small coefficient for quadratic drag
+    'max_brake_force': 1_000_000, # 1,000 kN (limited by momentum)
+    'max_tractive_force': 25_000_000, # 1,500 kN (very high for starting)
+}
+    
 def main():
+    from track import Track
+    
     """Sets up and runs a simple train simulation."""
     # Define track layout
     track_layout = [
@@ -93,7 +114,8 @@ def main():
     ]
     
     # Create train and track objects
-    train = Train(mass=1000000.0)  # 1000 tons
+
+    train = Train(high_speed_train_params_test)
     track = Track(track_layout)
     
     # Set wind conditions (example: 5 m/s headwind with 2 m/s variability and gusts up to 1.5x)
@@ -109,16 +131,13 @@ def main():
 
     while train.time < simulation_time_limit and not track.is_end_of_track():
         # Get current track properties (auto-updates track position)
-        track_props = track.get_current_properties(train.position)
-        if not track_props:
-            break
 
         # Simple control logic
         throttle = 1.0 if train.position <= 8000 else 0.0
         brake = 0.5 if train.position > 8000 else 0.0
         
         # Update train dynamics
-        time, pos, vel, acc = train.update_dynamics(dt, throttle, brake, track_props, track)
+        time, pos, vel, acc = train.update_dynamics(dt, throttle, brake, track)
         time_history.append(time)
         position_history.append(pos)
         velocity_history.append(vel)

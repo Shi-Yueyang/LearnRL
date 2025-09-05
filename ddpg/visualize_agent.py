@@ -19,14 +19,14 @@ def build_actor(ckpt: dict):
     obs_dim = obs_space.shape[0]
     act_dim = act_space.shape[0]
     act_high = act_space.high
-    model = Actor(obs_dim, act_dim, act_high)
+    model = Actor(obs_dim, act_dim, act_high, -act_high)
     model.load_state_dict(ckpt.get("actor"))
     model.eval()
     temp_env.close()
     return model, env_id
 
 
-def main():
+def make_animation():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ckpt = torch.load(
         os.path.join("runs", SAVE_FILE), map_location="cpu", weights_only=False
@@ -74,4 +74,4 @@ def main():
 if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
-    main()
+    make_animation()
