@@ -20,8 +20,8 @@ def train_agent():
     cfg.critic_lr = 3e-4
     cfg.noise_std = 15  # Lower initial noise
     cfg.noise_std_final = 0.1
-    cfg.start_random_episodes = 30  
-    cfg.batch_size = 128 
+    cfg.start_random_episodes = 30
+    cfg.batch_size = 128
     cfg.log_interval = 10
     os.makedirs(cfg.save_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -30,14 +30,11 @@ def train_agent():
     env = ConstSpeedEnv()
     if cfg.max_episode_steps:
         env = gym.wrappers.TimeLimit(env, max_episode_steps=cfg.max_episode_steps)
-    target_speeds = {
-        'times': [0, 10, 15, 20],
-        'speeds': [0, 10, 15, 30]
-    }        
+    target_speeds = {"times": [0, 10, 15, 20], "speeds": [0, 10, 15, 30]}
     option = {
         "train_coeffs": high_speed_train_params_test,
         "track_layout": default_track_layout,
-        "target_speed":target_speeds
+        "target_speed": target_speeds,
     }
     obs_space = env.observation_space
     act_space = env.action_space
@@ -65,7 +62,7 @@ def train_agent():
 
     buffer = ReplayBuffer(cfg.buffer_size, (obs_dim,), act_dim)
     try:
-    
+
         train_ddpg(
             cfg, env, actor, critic, target_actor, target_critic, buffer, device, option
         )
@@ -80,13 +77,16 @@ def test_agent():
     #     'speeds': [0, 12, 25, 8, 30, 5, 20, 40, 15, 35, 10, 0]
     # }
     target_speeds = {
-        'positions': [0, 50, 120, 200, 300, 450, 600, 750, 900, 1100, 1300, 1500],
-        'speeds': [1, 15, 15, 20, 20, 10, 25, 50, 30, 40, 15, 0]
-    }    
+        "positions": [0, 50, 120, 200, 300, 450, 600, 750, 900, 1100, 1300, 1500],
+        "speeds": [1, 15, 15, 20, 20, 10, 25, 50, 30, 40, 15, 0],
+    }
+
+    target_speeds = {"times": [0, 7, 10, 15], "speeds": [0, 10, 10, 0]}
+
     option = {
         "train_coeffs": high_speed_train_params_test,
         "track_layout": default_track_layout,
-        "target_speeds": target_speeds, 
+        "target_speeds": target_speeds,
     }
     # Reset environment
     obs, info = env.reset(seed=42, options=option)
@@ -103,7 +103,9 @@ def test_agent():
     actor = Actor(obs_dim, act_dim, act_high, act_low).to(device)
     try:
         ckpt = torch.load(
-            os.path.join("runs", "best.pt"), map_location="cpu", weights_only=False
+            os.path.join("runs", "followspeed1.pt"),
+            map_location="cpu",
+            weights_only=False,
         )
         actor.load_state_dict(ckpt["actor"])
         print(f"load model with return {ckpt['mean_return']:.2f}")
@@ -116,7 +118,9 @@ def test_agent():
             action = actor(obs_tensor).cpu().numpy()[0]
         return action
 
-    test_control_law(env, option, control_law, steps=1000, is_render=True,x_axes='time')
+    test_control_law(
+        env, option, control_law, steps=1000, is_render=True, x_axes="time"
+    )
 
 
 def test_actor():
@@ -139,7 +143,7 @@ def test_actor():
         print(f"load model with return {ckpt['mean_return']:.2f}")
     except Exception as e:
         pass
-    input = np.linspace(-30, 30, 200).reshape(-1,1)
+    input = np.linspace(-30, 30, 200).reshape(-1, 1)
     output = []
     for i in input:
         obs_tensor = torch.from_numpy(np.array(i)).float().unsqueeze(0).to(device)
@@ -150,9 +154,10 @@ def test_actor():
     plt.plot(input, output)
     plt.show()
 
+
 def test_critic():
     env = ConstSpeedEnv()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     obs_space = env.observation_space
     act_space = env.action_space
     obs_dim = obs_space.shape[0]
@@ -167,23 +172,26 @@ def test_critic():
         print(f"load critic with return {ckpt['mean_return']:.2f}")
     except Exception as e:
         print(f"No saved model found: {e}")
-    
+
     input_act = np.linspace(-100, 100, 100)  # Fixed range function
-    for obs  in range(-20,20,4):  # Test for different obs values
-        output =  []
+    for obs in range(-20, 20, 4):  # Test for different obs values
+        output = []
         for i in input_act:
-            obs_tensor = torch.from_numpy(np.array([obs])).float().unsqueeze(0).to(device)
+            obs_tensor = (
+                torch.from_numpy(np.array([obs])).float().unsqueeze(0).to(device)
+            )
             act_tensor = torch.from_numpy(np.array([i])).float().unsqueeze(0).to(device)
             with torch.no_grad():
                 q_value = critic(obs_tensor, act_tensor).cpu().numpy()[0]
             output.append(float(q_value))
         output = np.array(output)
         plt.plot(input_act, output)
-    plt.xlabel('Action')
-    plt.ylabel('Q-value')
-    plt.title('Critic Q-values vs Actions (obs=0)')
+    plt.xlabel("Action")
+    plt.ylabel("Q-value")
+    plt.title("Critic Q-values vs Actions (obs=0)")
     plt.show()
-    
+
+
 if __name__ == "__main__":  # pragma: no cover
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)

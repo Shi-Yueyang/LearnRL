@@ -35,7 +35,7 @@ class Config:
     min_buffer: int = 5_000
     updates_per_step: int = 1
     save_dir: str = "runs"
-    log_interval: int = 1
+    log_interval: int = 10
 
     def as_dict(self):
         return self.__dict__.copy()
@@ -49,7 +49,9 @@ def linear_decay(ep: int, start: float, end: float, decay_episodes: int):
 
 
 class Actor(nn.Module):
-    def __init__(self, obs_dim: int, act_dim: int, act_high: np.ndarray):
+    def __init__(
+        self, obs_dim: int, act_dim: int, act_high: np.ndarray, act_low: np.ndarray
+    ):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(obs_dim, 64),
@@ -60,9 +62,15 @@ class Actor(nn.Module):
             nn.Tanh(),
         )
         self.register_buffer("act_high", torch.from_numpy(act_high.astype(np.float32)))
+        self.register_buffer("act_low", torch.from_numpy(act_low.astype(np.float32)))
 
     def forward(self, x: torch.Tensor):
-        return self.net(x) * self.act_high
+        tanh_output = self.net(x)
+        # Scale and shift the tanh output from [-1, 1] to [act_low, act_high]
+        scaled_output = (tanh_output + 1) / 2 * (
+            self.act_high - self.act_low
+        ) + self.act_low
+        return scaled_output
 
 
 class Critic(nn.Module):
@@ -133,12 +141,134 @@ def soft_update(src: nn.Module, dst: nn.Module, tau: float):
         p_dst.data.lerp_(p_src.data, tau)
 
 
+def train_td3(
+    cfg: Config,
+    env,
+    actor,
+    critic,
+    target_actor,
+    target_critic,
+    buffer:ReplayBuffer,
+    device,
+    env_option=None,
+    save_file=SAVE_FILE,
+):
+    actor_opt = torch.optim.Adam(actor.parameters(), lr=cfg.actor_lr)
+    critic_opt = torch.optim.Adam(critic.parameters(), lr=cfg.critic_lr)
+
+    recent_returns = deque(maxlen=50)
+    start_time = time.time()
+    rng = np.random.default_rng(cfg.seed)
+    best_mean_return = -1e9
+    total_updates = 0
+    last_print_time = 0
+
+    for ep in range(1, cfg.episodes + 1):
+        obs, _ = env.reset(seed=cfg.seed + ep, options=env_option)
+        ep_ret = 0.0
+        steps = 0
+        critic_loss = 0
+        done = False
+        noise_std = linear_decay(
+            ep,
+            cfg.action_noise_std,
+            cfg.action_noise_final,
+            cfg.action_noise_decay_episodes,
+        )
+        if ep>3000:
+            pass
+        while not done:
+            steps += 1
+            obs_tensor = torch.from_numpy(np.array(obs)).float().unsqueeze(0).to(device)
+            with torch.no_grad():
+                action = actor(obs_tensor).cpu().numpy()[0]
+            if ep <= cfg.start_random_episodes:
+                action = env.action_space.sample()
+            else:
+                action = action + rng.normal(
+                    0, noise_std, size=env.action_space.shape[0]
+                )
+            action = np.clip(action, env.action_space.low, env.action_space.high)
+            next_obs, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+            buffer.add(obs, action, float(reward), next_obs, bool(done))
+            obs = next_obs
+            ep_ret += reward
+
+            if len(buffer) >= cfg.min_buffer:
+                for _ in range(cfg.updates_per_step):
+                    o_b, a_b, r_b, no_b, d_b = buffer.sample(cfg.batch_size)
+                    o_b = o_b.to(device)
+                    a_b = a_b.to(device)
+                    r_b = r_b.to(device)
+                    no_b = no_b.to(device)
+                    d_b = d_b.to(device)
+
+                    with torch.no_grad():
+                        # target policy smoothing
+                        target_a = target_actor(no_b)
+                        noise = (
+                            torch.randn_like(target_a)
+                            * cfg.policy_noise
+                            * actor.act_high
+                        ).clamp(-cfg.noise_clip, cfg.noise_clip)
+                        target_a = (target_a + noise).clamp(
+                            -actor.act_high, actor.act_high
+                        )
+                        q1_t, q2_t = target_critic(no_b, target_a)
+                        target_q = torch.min(q1_t, q2_t)
+                        y = r_b + cfg.gamma * (1 - d_b) * target_q
+
+                    q1, q2 = critic(o_b, a_b)
+                    critic_loss = F.mse_loss(q1, y) + F.mse_loss(q2, y)
+                    critic_opt.zero_grad()
+                    critic_loss.backward()
+                    critic_opt.step()
+
+                    if total_updates % cfg.policy_delay == 0:
+                        # actor update
+                        a_pred = actor(o_b)
+                        actor_loss = -critic.q1_only(o_b, a_pred).mean()
+                        actor_opt.zero_grad()
+                        actor_loss.backward()
+                        actor_opt.step()
+                        soft_update(actor, target_actor, cfg.tau)
+                        soft_update(critic, target_critic, cfg.tau)
+
+                    total_updates += 1
+
+        recent_returns.append(ep_ret)
+        mean_return = float(np.mean(recent_returns))
+        wall = time.time() - start_time
+        if ep == 1 or (ep % cfg.log_interval == 0 and wall-last_print_time > 1):
+            last_print_time = wall
+            print(
+                f"Ep {ep}/{cfg.episodes} | Steps {steps} | Ret {ep_ret:.1f} | Mean50 {mean_return:.1f} | Buffer {len(buffer)} | Critc loss {critic_loss:.2f}"
+            )
+
+        if mean_return > best_mean_return and recent_returns:
+            best_mean_return = mean_return
+            torch.save(
+                {
+                    "actor": actor.state_dict(),
+                    "critic": critic.state_dict(),
+                    "mean_return": mean_return,
+                    'ep_ret':ep_ret,
+                    "episode": ep,
+                    "cfg": cfg.as_dict(),
+                    "act_high": env.action_space.high,
+                },
+                os.path.join(cfg.save_dir, save_file),
+            )
+
+    print(f"Training complete. Best mean return {best_mean_return:.2f}")
+
+
 def main():
     cfg = Config()
     os.makedirs(cfg.save_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    rng = np.random.default_rng(cfg.seed)
     torch.manual_seed(cfg.seed)
 
     env = gym.make(cfg.env_id)
@@ -158,88 +288,9 @@ def main():
     target_actor.load_state_dict(actor.state_dict())
     target_critic.load_state_dict(critic.state_dict())
 
-    best_mean_return = -1e9
-
-    actor_opt = torch.optim.Adam(actor.parameters(), lr=cfg.actor_lr)
-    critic_opt = torch.optim.Adam(critic.parameters(), lr=cfg.critic_lr)
-
     buffer = ReplayBuffer(cfg.buffer_size, (obs_dim,), act_dim)
-    recent_returns = deque(maxlen=50)
-    start_time = time.time()
-    total_updates = 0
 
-    for ep in range(1, cfg.episodes + 1):
-        obs, _ = env.reset(seed=cfg.seed + ep)
-        ep_ret = 0.0
-        done = False
-        noise_std = linear_decay(ep, cfg.action_noise_std, cfg.action_noise_final, cfg.action_noise_decay_episodes)
-
-        while not done:
-            obs_tensor = torch.from_numpy(np.array(obs)).float().unsqueeze(0).to(device)
-            with torch.no_grad():
-                action = actor(obs_tensor).cpu().numpy()[0]
-            if ep <= cfg.start_random_episodes:
-                action = act_space.sample()
-            else:
-                action = action + rng.normal(0, noise_std, size=act_dim) * act_high
-            action = np.clip(action, -act_high, act_high)
-            next_obs, reward, terminated, truncated, _ = env.step(action)
-            done = terminated or truncated
-            buffer.add(obs, action, float(reward), next_obs, bool(done))
-            obs = next_obs
-            ep_ret += reward
-
-            if len(buffer) >= cfg.min_buffer:
-                for _ in range(cfg.updates_per_step):
-                    o_b, a_b, r_b, no_b, d_b = buffer.sample(cfg.batch_size)
-                    o_b = o_b.to(device)
-                    a_b = a_b.to(device)
-                    r_b = r_b.to(device)
-                    no_b = no_b.to(device)
-                    d_b = d_b.to(device)
-
-                    with torch.no_grad():
-                        # target policy smoothing
-                        target_a = target_actor(no_b)
-                        noise = (torch.randn_like(target_a) * cfg.policy_noise * actor.act_high).clamp(-cfg.noise_clip, cfg.noise_clip)
-                        target_a = (target_a + noise).clamp(-actor.act_high, actor.act_high)
-                        q1_t, q2_t = target_critic(no_b, target_a)
-                        target_q = torch.min(q1_t, q2_t)
-                        y = r_b + cfg.gamma * (1 - d_b) * target_q
-
-                    q1, q2 = critic(o_b, a_b)
-                    critic_loss = F.mse_loss(q1, y) + F.mse_loss(q2, y)
-                    critic_opt.zero_grad(); critic_loss.backward(); critic_opt.step()
-
-                    if total_updates % cfg.policy_delay == 0:
-                        # actor update
-                        a_pred = actor(o_b)
-                        actor_loss = -critic.q1_only(o_b, a_pred).mean()
-                        actor_opt.zero_grad(); actor_loss.backward(); actor_opt.step()
-                        soft_update(actor, target_actor, cfg.tau)
-                        soft_update(critic, target_critic, cfg.tau)
-
-                    total_updates += 1
-
-        recent_returns.append(ep_ret)
-        mean_return = float(np.mean(recent_returns))
-        if ep % cfg.log_interval == 0:
-            wall = time.time() - start_time
-            print(f"Ep {ep}/{cfg.episodes} | Ret {ep_ret:.1f} | Mean({len(recent_returns)}) {mean_return:.1f} | Buffer {len(buffer)} | Noise {noise_std:.3f} | Updates {total_updates}")
-
-        if mean_return > best_mean_return and recent_returns:
-            best_mean_return = mean_return
-            print(f"New best mean return {best_mean_return:.2f}")
-            torch.save({
-                "actor": actor.state_dict(),
-                "critic": critic.state_dict(),
-                "mean_return": mean_return,
-                "episode": ep,
-                "cfg": cfg.as_dict(),
-                "act_high": act_high,
-            }, os.path.join(cfg.save_dir, SAVE_FILE))
-
-    print(f"Training complete. Best mean return {best_mean_return:.2f}")
+    train_td3(cfg, env, actor, critic, target_actor, target_critic, buffer, device)
 
 
 if __name__ == "__main__":  # pragma: no cover

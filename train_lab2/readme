@@ -1,0 +1,3 @@
+# Modification
+
+In the first version of the training environment, the model included static resistance, and the train could not move backward. This caused different actions to produce the same reward, leading to poor critic convergence. In the updated version, static resistance is removed and backward motion is allowed, which eliminates this ambiguity and improves training stability.

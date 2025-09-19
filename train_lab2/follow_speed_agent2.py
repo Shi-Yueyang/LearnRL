@@ -1,14 +1,28 @@
+import os
+import sys
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from train import Train
+from train2 import Train2
 from track import Track
 from typing import Callable, Dict, Any
 import matplotlib.pyplot as plt
 from typing import Literal
+from collections import deque
 
 
-class ConstSpeedEnv(gym.Env):
+from td3.train_agent import Config, Actor, Critic, ReplayBuffer, train_td3
+from train_lab2.train2 import high_speed_train_params_test
+from track import default_track_layout
+import torch
+
+ERROR_COUNT = 3
+
+
+class ConstSpeedEnv2(gym.Env):
 
     metadata = {"render_modes": ["human"]}
 
@@ -28,10 +42,10 @@ class ConstSpeedEnv(gym.Env):
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(1,),  # [position, velocity, acceleration, time]
+            shape=(ERROR_COUNT,),  # [position, velocity, acceleration, time]
             dtype=np.float32,
         )
-
+        self.recent_errors = deque([0] * ERROR_COUNT, maxlen=ERROR_COUNT)
         self.render_mode = render_mode
         self.reached_steps = 0
         # Environment state variables
@@ -41,10 +55,12 @@ class ConstSpeedEnv(gym.Env):
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
 
-        self.train = Train(options["train_coeffs"])
+        self.train = Train2(options["train_coeffs"])
         self.track = Track(options["track_layout"])
-        self.target_speeds = options.get("target_speeds", 25.0)  # m/s
-
+        self.target_speeds = options.get("target_speeds")  # m/s
+        self.terminate_time = options['terminate_time']
+        
+        
         self.at_target_counter = 0
         self.steps = 0
         self.previous_action = 0.0
@@ -65,7 +81,7 @@ class ConstSpeedEnv(gym.Env):
     def step(self, action: np.ndarray | float):
         if isinstance(action, np.ndarray) or isinstance(action, list):
             action = float(action[0])
-
+        action /= 10
         # Don't scale action here - let the actor learn the proper scaling
         self._update_state(action)
 
@@ -123,7 +139,9 @@ class ConstSpeedEnv(gym.Env):
         pos, vel, acc, time = self.state
         target_speed = self.get_target_speed()
         velocity_error = vel - target_speed
-        return np.array([velocity_error], dtype=np.float32)
+        self.recent_errors.append(velocity_error)
+
+        return np.array(self.recent_errors, dtype=np.float32)
 
     def _calculate_reward(self, action):
         pos, vel, acc, time = self.state
@@ -131,28 +149,39 @@ class ConstSpeedEnv(gym.Env):
 
         # --- Tracking ---
         velocity_error = abs(vel - target_speed)
-        velocity_reward = - (velocity_error / (abs(target_speed) + 1e-3)) ** 2
+        # velocity_reward = -((velocity_error / (abs(target_speed) + 1e-3)) ** 2)
+        velocity_reward = (
+            -((velocity_error) ** 2) / 50.0
+        )  # Scale to keep reward manageable
 
         # --- Action penalties ---
         action_change = action - self.previous_action
-        action_smoothness_penalty = -0.05 * (action_change ** 2)
+        action_smoothness_penalty = -0.02 * (action_change**2)
 
+        survive_reward = 0.1
         self.previous_action = action
 
-        return velocity_reward  + action_smoothness_penalty
-
+        return velocity_reward + survive_reward
 
     def _is_terminated(self):
         pos, vel, acc, time = self.state
-        if time >= 15.0:
+        if time >= self.terminate_time:
             return True
         return False
 
     def _is_truncated(self):
         pos, vel, acc, time = self.state
         target_speed = self.get_target_speed()
-        if vel > target_speed * 3:
+
+        velocity_error = abs(vel - target_speed)
+        max_allowed_error = max(10.0, abs(target_speed) * 0.5)
+
+        if velocity_error > max_allowed_error and time > 2.0:
             return True
+
+        # if target_speed > 1.0 and vel < -1.0:
+        #     return True
+
         return False
 
     def _get_info(self):
@@ -164,13 +193,112 @@ class ConstSpeedEnv(gym.Env):
         }
 
     def render(self):
-        """Render the environment (optional)"""
+        """Render the environment(optional)"""
         if self.render_mode == "human":
             print(f"Step: {self.steps}, State: {self.state}")
 
     def close(self):
         """Clean up resources"""
         pass
+
+
+def test_env():
+    from train_lab2.train2 import high_speed_train_params_test
+    from track import default_track_layout
+
+    """Test the custom environment"""
+    env = ConstSpeedEnv2()
+
+    print("Testing environment...")
+    option = {
+        "train_coeffs": high_speed_train_params_test,
+        "track_layout": default_track_layout,
+        "target_speed": 25.0,  # Target speed in m/s
+    }
+    # Reset environment
+    obs, info = env.reset(seed=42, options=option)
+    print(f"Initial observation: {obs}")
+
+    # Run a few steps
+    for i in range(10):
+        # Random action
+        action = env.action_space.sample()
+        action = action
+        obs, reward, terminated, truncated, info = env.step(action)
+
+        print(
+            f"Step {i+1}: action={action}, obs= {  '|'.join([f'{ob:.1f}' for ob in obs[-4:-1] ]) }, reward={reward:.3f}"
+        )
+
+        if terminated:
+            print("Episode terminated!")
+            break
+        if truncated:
+            print("Episode truncated!")
+            break
+    env.close()
+
+
+def train_agent():
+    cfg = Config()
+    cfg.episodes = 10000
+    cfg.actor_lr = 1e-4  # Lower learning rate
+    cfg.critic_lr = 1e-4
+    cfg.noise_std = 10
+    cfg.noise_std_final = 0.1
+    cfg.start_random_episodes = 30
+    cfg.batch_size = 128
+    cfg.log_interval = 10
+
+    os.makedirs(cfg.save_dir, exist_ok=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    env = ConstSpeedEnv2()
+
+    if cfg.max_episode_steps:
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=cfg.max_episode_steps)
+
+    target_speeds = {"times": [0, 5, 10, 15], "speeds": [0, 10, 10, 0]}
+
+    option = {
+        "train_coeffs": high_speed_train_params_test,
+        "track_layout": default_track_layout,
+        "target_speeds": target_speeds,
+        "terminate_time": 15.0,
+    }
+    obs_space = env.observation_space
+    act_space = env.action_space
+    obs_dim = obs_space.shape[0]
+    act_dim = act_space.shape[0]
+    act_high = act_space.high
+    act_low = act_space.low
+    actor = Actor(obs_dim, act_dim, act_high, act_low).to(device)
+    critic = Critic(obs_dim, act_dim).to(device)
+
+    target_actor = Actor(obs_dim, act_dim, act_high, act_low).to(device)
+    target_critic = Critic(obs_dim, act_dim).to(device)
+    target_actor.load_state_dict(actor.state_dict())
+    target_critic.load_state_dict(critic.state_dict())
+    buffer = ReplayBuffer(cfg.buffer_size, (obs_dim,), act_dim)
+
+    # try:
+    #     ckpt = torch.load(
+    #         os.path.join("runs", "agent2_1.pt"), map_location="cpu", weights_only=False
+    #     )
+    #     actor.load_state_dict(ckpt["actor"])
+    #     critic.load_state_dict(ckpt["critic"])
+    #     print(f"load model with return {ckpt['mean_return']:.2f}")
+    # except Exception as e:
+    #     pass
+
+    try:
+
+        train_td3(
+            cfg, env, actor, critic, target_actor, target_critic, buffer, device, option
+        )
+    except KeyboardInterrupt:
+        print("Training interrupted by user")
+    finally:
+        test_agent()
 
 
 def visualize_control_law(result: Dict[str, list], x_axes="time"):
@@ -234,10 +362,9 @@ def visualize_control_law(result: Dict[str, list], x_axes="time"):
 
 
 def test_control_law(
-    env: ConstSpeedEnv,
+    env: ConstSpeedEnv2,
     env_option: Dict[str, Any],
     control_law: Callable[[np.ndarray], np.ndarray],
-    steps: int = 100,
     is_render: bool = True,
     x_axes: Literal["time", "pos"] = "time",
 ) -> Dict[str, list]:
@@ -250,12 +377,16 @@ def test_control_law(
     action_history = []
     reward_history = []
     acc_history = []
-
-    for i in range(steps):
+    done = False
+    steps = 0
+    while not done:
         # Get action from the control law
-        action = control_law(obs) if i > 0 else np.array([0.0])
+        action = control_law(obs)
+        action = np.clip(action, env.action_space.low, env.action_space.high)
+        if steps == 0:
+            action = np.array([0.0])
         obs, reward, terminated, truncated, info = env.step(action)
-
+        done = terminated or truncated
         target_speed = env.get_target_speed()
 
         state = env.state  # pos vel acc time
@@ -266,8 +397,8 @@ def test_control_law(
         action_history.append(action[0])
         reward_history.append(reward)
         pos_history.append(state[0])
-        if truncated:
-            break
+        steps += 1
+
     result = {
         "pos_history": pos_history,
         "vel_history": vel_history,
@@ -277,45 +408,57 @@ def test_control_law(
         "action_history": action_history,
         "reward_history": reward_history,
     }
+    print(f"steps {steps}")
     if is_render:
         visualize_control_law(result, x_axes)
     return result
 
 
-# Example usage and testing
-def main():
-    from train import high_speed_train_params_test
-    from track import default_track_layout
+def test_agent():
+    env = ConstSpeedEnv2()
+    # target_speeds = {
+    #     "positions": [0, 50, 120, 200, 300, 450, 600, 750, 900, 1100, 1300, 1500],
+    #     "speeds": [1, 15, 15, 20, 20, 10, 25, 50, 30, 40, 15, 0],
+    # }
 
-    """Test the custom environment"""
-    env = ConstSpeedEnv()
+    target_speeds = {"times": [0, 7, 10, 15], "speeds": [5, 10, 10, 0]}
 
-    print("Testing environment...")
+    # target_speeds = 25
     option = {
         "train_coeffs": high_speed_train_params_test,
         "track_layout": default_track_layout,
-        "target_speed": 25.0,  # Target speed in m/s
+        "target_speeds": target_speeds,
+        "terminate_time": 50.0,
     }
     # Reset environment
-    obs, info = env.reset(seed=42, options=option)
-    print(f"Initial observation: {obs}")
-    print(f"Initial info: {info}")
+    obs, _ = env.reset(seed=42, options=option)
+    print(f"Initial err: {  ' |'.join([f'{ob:.1f}' for ob in obs ]) }")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    obs_space = env.observation_space
+    act_space = env.action_space
+    obs_dim = obs_space.shape[0]
+    act_dim = act_space.shape[0]
+    act_high = act_space.high
+    act_low = act_space.low
 
-    # Run a few steps
-    for i in range(10):
-        # Random action
-        action = env.action_space.sample()
-        action = action / 100
-        obs, reward, terminated, truncated, info = env.step(action)
+    actor = Actor(obs_dim, act_dim, act_high, act_low).to(device)
 
-        print(f"Step {i+1}: action={action}, obs={obs}, reward={reward:.3f}")
+    ckpt = torch.load(
+        os.path.join("runs", "agent2_1.pt"), map_location="cpu", weights_only=False
+    )
+    actor.load_state_dict(ckpt["actor"])
+    print(f"load model with ep_ret {ckpt['ep_ret']:.2f}")
 
-        if terminated or truncated:
-            print("Episode finished!")
-            break
+    def control_law(obs):
+        obs_tensor = torch.from_numpy(np.array(obs)).float().unsqueeze(0).to(device)
+        with torch.no_grad():
+            action = actor(obs_tensor).cpu().numpy()[0]
+        return action
 
-    env.close()
+    test_control_law(env, option, control_law, is_render=True, x_axes="time")
 
 
 if __name__ == "__main__":
-    main()
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(script_dir)
+    test_agent()
