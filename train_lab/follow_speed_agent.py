@@ -103,7 +103,7 @@ def test_agent():
     actor = Actor(obs_dim, act_dim, act_high, act_low).to(device)
     try:
         ckpt = torch.load(
-            os.path.join("runs", "followspeed1.pt"),
+            os.path.join("runs", "agent1.pt"),
             map_location="cpu",
             weights_only=False,
         )
@@ -149,7 +149,7 @@ def test_actor():
         obs_tensor = torch.from_numpy(np.array(i)).float().unsqueeze(0).to(device)
         with torch.no_grad():
             action = actor(obs_tensor).cpu().numpy()[0]
-        output.append(float(action))
+        output.append(action.item())
     output = np.array(output)
     plt.plot(input, output)
     plt.show()
@@ -166,7 +166,7 @@ def test_critic():
     critic = Critic(obs_dim, act_dim).to(device)
     try:
         ckpt = torch.load(
-            os.path.join("runs", "best.pt"), map_location="cpu", weights_only=False
+            os.path.join("runs", "agent1.pt"), map_location="cpu", weights_only=False
         )
         critic.load_state_dict(ckpt["critic"])
         print(f"load critic with return {ckpt['mean_return']:.2f}")

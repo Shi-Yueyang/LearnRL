@@ -57,9 +57,17 @@ class ConstSpeedEnv2(gym.Env):
 
         self.train = Train2(options["train_coeffs"])
         self.track = Track(options["track_layout"])
-        self.target_speeds = options.get("target_speeds")  # m/s
+        self.target_speeds = options["target_speeds"]
         self.terminate_time = options['terminate_time']
         
+        if self.target_speeds == 'random':
+            time_points = np.sort(np.random.uniform(0, self.terminate_time, size=4))
+            speed_points = np.random.uniform(0, 50, size=4)
+            speed_points[2] = speed_points[1]  
+            self.target_speeds = {
+                "times": time_points.tolist(),
+                "speeds": speed_points.tolist(),
+            }
         
         self.at_target_counter = 0
         self.steps = 0
@@ -257,13 +265,13 @@ def train_agent():
     if cfg.max_episode_steps:
         env = gym.wrappers.TimeLimit(env, max_episode_steps=cfg.max_episode_steps)
 
-    target_speeds = {"times": [0, 5, 10, 15], "speeds": [0, 10, 10, 0]}
+    # target_speeds = {"times": [0, 5, 10, 15], "speeds": [0, 10, 10, 0]}
 
     option = {
         "train_coeffs": high_speed_train_params_test,
         "track_layout": default_track_layout,
-        "target_speeds": target_speeds,
-        "terminate_time": 15.0,
+        "target_speeds": "random",
+        "terminate_time": 20.0,
     }
     obs_space = env.observation_space
     act_space = env.action_space
@@ -421,7 +429,9 @@ def test_agent():
     #     "speeds": [1, 15, 15, 20, 20, 10, 25, 50, 30, 40, 15, 0],
     # }
 
-    target_speeds = {"times": [0, 7, 10, 15], "speeds": [5, 10, 10, 0]}
+    # target_speeds = {"times": [0, 7, 10, 15], "speeds": [5, 10, 10, 0]}
+    
+    target_speeds = "random"
 
     # target_speeds = 25
     option = {
