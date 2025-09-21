@@ -19,7 +19,9 @@ def build_actor(ckpt: dict):
     obs_dim = obs_space.shape[0]
     act_dim = act_space.shape[0]
     act_high = act_space.high
-    model = Actor(obs_dim, act_dim, act_high)
+    act_low = act_space.low
+
+    model = Actor(obs_dim, act_dim, act_high, act_low)
     model.load_state_dict(ckpt.get("actor"))
     model.eval()
     temp_env.close()

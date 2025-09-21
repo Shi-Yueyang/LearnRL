@@ -6,3 +6,4 @@ matplotlib
 imageio
 pygame  # needed for gymnasium classic-control human rendering (CartPole)
 # Alternatively you can install extras: pip install "gymnasium[classic-control]"
+tensorboard
