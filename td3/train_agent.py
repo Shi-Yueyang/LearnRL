@@ -335,6 +335,7 @@ def train_td3(
     buffer: ReplayBuffer,
     device,
     env_option=None,
+    extra_save=None,
 ) -> float:
     actor_opt = torch.optim.Adam(actor.parameters(), lr=cfg.actor_lr)
     critic_opt = torch.optim.Adam(critic.parameters(), lr=cfg.critic_lr)
@@ -493,6 +494,7 @@ def train_td3(
                     "episode": ep,
                     "cfg": cfg.as_dict(),
                     "act_high": env.action_space.high,
+                    "extra_save":extra_save
                 }
                 # Save to run-specific dir
                 torch.save(payload, os.path.join(cfg.save_dir, cfg.save_file))

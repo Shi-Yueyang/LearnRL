@@ -2,8 +2,14 @@ import os
 import sys
 import time
 import random
+from typing import Literal, Callable, Dict, Any
+from collections import deque
+
+from helper import generate_random_target_speeds, interp_1d
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+import matplotlib.pyplot as plt
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -14,15 +20,13 @@ from scipy.interpolate import (
     UnivariateSpline,
     Akima1DInterpolator,
 )
+import torch
+
 from train2 import Train2
-from track import Track
-from typing import Callable, Dict, Any
-import matplotlib.pyplot as plt
-from typing import Literal
-from collections import deque
 
 
 from td3.train_agent import Config, Actor, Critic, ReplayBuffer, train_td3
+from track import Track
 from train_lab2.train2 import high_speed_train_params_test
 from track import default_track_layout
 from train_lab2.plotting import (
@@ -30,33 +34,26 @@ from train_lab2.plotting import (
     plot_learning_curve,
     plot_multiple_learning_curves_with_shade,
 )
-import torch
-
-
-def generate_random_target_speeds(terminate_time, num_points=4):
-    time_points = np.sort(np.random.uniform(0, terminate_time, size=num_points))
-    speed_points = np.random.uniform(0, 50, size=num_points)
-    speed_points[2] = speed_points[1]  # Make middle two speeds equal for flat section
-    return {"times": time_points.tolist(), "speeds": speed_points.tolist()}
 
 
 # TARGET_SPEEDS = {"speeds": 10}
 # TARGET_SPEEDS = "random"
 TARGET_SPEEDS = {
-    "times": [0,  3, 10, 12, 20, 25, 30],
+    "times": [0, 3, 10, 12, 20, 25, 30],
     "speeds": [0, 10, 10, 15, 15, 5, 5],
 }
 # TARGET_SPEEDS = [generate_random_target_speeds(20.0, num_points=4) for _ in range(3)]
 
 EPISODE_LENGTH = 30
-EPISODES = 5000
-INTERP_METHOD = 'cubic'
+EPISODES = 50
+INTERP_METHOD = "cubic"
+
 
 class TrainSpeedEnv(gym.Env):
 
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, err_cnt,ext_dim, render_mode=None):
+    def __init__(self, err_cnt, ext_dim, render_mode=None):
         super().__init__()
 
         self.action_space = spaces.Box(
@@ -153,67 +150,18 @@ class TrainSpeedEnv(gym.Env):
             )
             target_speed = np.float32(val)
         elif "times" in self.target_speeds:
-            val = self._interp_1d(
+            val = interp_1d(
                 time,
                 self.target_speeds["times"],
                 self.target_speeds["speeds"],
+                self.interp_method,
+                self.interp_s,
             )
             target_speed = np.float32(val)
         else:
             target_speed = np.float32(self.target_speeds["speeds"])
 
         return target_speed
-
-    def _interp_1d(self, x: float, xp, fp) -> float:
-        """Interpolation helper with multiple methods.
-        Methods:
-          - 'linear': piecewise linear (np.interp)
-          - 'nearest': nearest neighbor
-          - 'previous' / 'zoh' / 'step': zero-order hold (previous sample)
-          - 'next': next-step hold (right continuous)
-          - 'pchip': monotone cubic (PCHIP, no overshoot)
-          - 'cubic': natural cubic spline
-          - 'univariate': smoothed spline (UnivariateSpline), uses self.interp_s
-          - 'akima': Akima1DInterpolator (robust to local oscillations)
-        Boundary behavior: clamp to first/last fp.
-        """
-        xp_arr = np.asarray(xp, dtype=float)
-        fp_arr = np.asarray(fp, dtype=float)
-
-        method = str(self.interp_method).lower()
-        # Clamp outside domain
-        if x <= xp_arr[0]:
-            return float(fp_arr[0])
-        if x >= xp_arr[-1]:
-            return float(fp_arr[-1])
-        if method == "linear":
-            return float(np.interp(x, xp_arr, fp_arr, left=fp_arr[0], right=fp_arr[-1]))
-        elif method == "nearest":
-            idx = int(np.argmin(np.abs(xp_arr - x)))
-            return float(fp_arr[idx])
-        elif method in ("previous", "zoh", "step"):
-            idx = int(np.searchsorted(xp_arr, x, side="right") - 1)
-            idx = int(np.clip(idx, 0, len(xp_arr) - 1))
-            return float(fp_arr[idx])
-        elif method == "next":
-            idx = int(np.searchsorted(xp_arr, x, side="left"))
-            idx = int(np.clip(idx, 0, len(xp_arr) - 1))
-            return float(fp_arr[idx])
-        elif method in ("pchip", "monotone"):
-            f = PchipInterpolator(xp_arr, fp_arr, extrapolate=True)
-            return float(f(x))
-        elif method in ("cubic", "cubic_spline", "cspline"):
-            f = CubicSpline(xp_arr, fp_arr, bc_type="natural", extrapolate=True)
-            return float(f(x))
-        elif method in ("univariate", "spline", "smooth"):
-            f = UnivariateSpline(xp_arr, fp_arr, s=self.interp_s)
-            return float(f(x))
-        elif method == "akima":
-            f = Akima1DInterpolator(xp_arr, fp_arr)
-            return float(f(x))
-        else:
-            # Fallback to linear
-            return float(np.interp(x, xp_arr, fp_arr, left=fp_arr[0], right=fp_arr[-1]))
 
     def _update_state(self, action: float):
         """Update the environment state based on action"""
@@ -229,7 +177,7 @@ class TrainSpeedEnv(gym.Env):
         pos, vel, acc, time = self.state
 
         track_props = self.track.get_current_properties(train_position=pos)
-        extend_obs = [track_props["gradient"], track_props["curve_radius"], vel]
+        extend_obs = [acc, vel, track_props["gradient"], track_props["curve_radius"]]
         extend_obs = extend_obs[: self.extend_dim]
 
         target_speed = self.get_target_speed()
@@ -244,13 +192,13 @@ class TrainSpeedEnv(gym.Env):
 
         # --- Tracking ---
         velocity_error = abs(vel - target_speed)
-        
-        velocity_reward = - (velocity_error / (abs(target_speed) + 1e-3)) ** 2
-        
+
+        velocity_reward = -((velocity_error / (abs(target_speed) + 1e-3)) ** 2)
+
         # velocity_reward = (
         #     -((velocity_error) ** 2) / 500.0
-        # )  
-        
+        # )
+
         # --- Action penalties ---
         action_change = action - self.previous_action
         action_smoothness_penalty = -0.02 * (action_change**2)
@@ -342,7 +290,7 @@ def test_env():
 def train_agent(
     seed: int = 42,
     save_dir="runs",
-    err_cnt=4,
+    err_cnt=2,
     ext_dim=2,
     is_do_test=True,
 ):
@@ -360,8 +308,8 @@ def train_agent(
 
     os.makedirs(cfg.save_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    env = TrainSpeedEnv(err_cnt=err_cnt,ext_dim=ext_dim)
-    
+    env = TrainSpeedEnv(err_cnt=err_cnt, ext_dim=ext_dim)
+
     if cfg.max_episode_steps:
         env = gym.wrappers.TimeLimit(env, max_episode_steps=cfg.max_episode_steps)
 
@@ -376,19 +324,20 @@ def train_agent(
     }
     obs_space = env.observation_space
     act_space = env.action_space
-    err_cnt = obs_space.shape[0]
+    obs_dim = obs_space.shape[0]
     act_dim = act_space.shape[0]
     act_high = act_space.high
     act_low = act_space.low
-    actor = Actor(err_cnt, act_dim, act_high, act_low).to(device)
-    critic = Critic(err_cnt, act_dim).to(device)
+    actor = Actor(obs_dim, act_dim, act_high, act_low).to(device)
+    critic = Critic(obs_dim, act_dim).to(device)
 
-    target_actor = Actor(err_cnt, act_dim, act_high, act_low).to(device)
-    target_critic = Critic(err_cnt, act_dim).to(device)
+    target_actor = Actor(obs_dim, act_dim, act_high, act_low).to(device)
+    target_critic = Critic(obs_dim, act_dim).to(device)
     target_actor.load_state_dict(actor.state_dict())
     target_critic.load_state_dict(critic.state_dict())
-    buffer = ReplayBuffer(cfg.buffer_size, (err_cnt,), act_dim)
+    buffer = ReplayBuffer(cfg.buffer_size, (obs_dim,), act_dim)
 
+    extra_save={'err_cnt':err_cnt, 'ext_dim':ext_dim}
     try:
         return train_td3(
             cfg,
@@ -400,6 +349,7 @@ def train_agent(
             buffer,
             device,
             env_option,
+            extra_save
         )
     except KeyboardInterrupt:
         print("Training interrupted by user")
@@ -408,7 +358,7 @@ def train_agent(
             test_agent()
 
 
-def train_agents(iters=10, episodes=800):
+def train_agents(iters=10):
     for err_cnt in [7, 4, 1]:
         best_ep_ret = -float("inf")
         for i in range(iters):
@@ -575,8 +525,11 @@ def test_agent(ckpt_path: str = None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     obs_dim = ckpt["obs_dim"]
+    extra_save = ckpt['extra_save']
 
-    err_cnt = obs_dim - 1
+    err_cnt = extra_save['err_cnt']
+    ext_dim = extra_save['ext_dim']
+
     act_dim = ckpt["act_dim"]
     act_high = ckpt["act_high"]
     act_low = ckpt["act_low"]
@@ -584,15 +537,15 @@ def test_agent(ckpt_path: str = None):
     actor.load_state_dict(ckpt["actor"])
     print(f"load model with ep_ret {ckpt['ep_ret']:.2f}")
 
-    env = TrainSpeedEnv(err_cnt)
-        # and smooth methods: 'pchip', 'cubic', 'univariate', 'akima'
+    env = TrainSpeedEnv(err_cnt,ext_dim)
+    # and smooth methods: 'pchip', 'cubic', 'univariate', 'akima'
 
     option = {
         "train_coeffs": high_speed_train_params_test,
         "track_layout": default_track_layout,
         "target_speeds": TARGET_SPEEDS,
-        "terminate_time": 30.0,
-        "interp_method": "cubic",
+        "terminate_time": EPISODE_LENGTH,
+        "interp_method": INTERP_METHOD,
     }
     # Reset environment
     obs, _ = env.reset(seed=42, options=option)
@@ -610,4 +563,5 @@ def test_agent(ckpt_path: str = None):
 if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
-    train_agent()
+    train_agent(err_cnt=2, ext_dim=2)
+    # test_agent()
