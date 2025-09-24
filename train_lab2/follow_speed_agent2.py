@@ -24,9 +24,16 @@ from collections import deque
 from td3.train_agent import Config, Actor, Critic, ReplayBuffer, train_td3
 from train_lab2.train2 import high_speed_train_params_test
 from track import default_track_layout
-from train_lab2.plotting import plot_all_histories, plot_learning_curve
+from train_lab2.plotting import (
+    plot_learning_curve_with_shade,
+    plot_learning_curve,
+    plot_multiple_learning_curves_with_shade,
+)
 import torch
-
+TARGET_SPEEDS = {
+    "times": [0,  3, 10, 12, 20, 25, 30],
+    "speeds": [0, 10, 10, 15, 15, 5, 5],
+}
 
 class ConstSpeedEnv2(gym.Env):
 
@@ -204,6 +211,9 @@ class ConstSpeedEnv2(gym.Env):
         """Get current observation"""
         # Return velocity error instead of acceleration
         pos, vel, acc, time = self.state
+        
+        track_props = self.track.get_current_properties(train_position=pos)
+        
         target_speed = self.get_target_speed()
         velocity_error = vel - target_speed
         self.recent_errors.append(velocity_error)
@@ -310,7 +320,7 @@ def test_env():
 
 def train_agent(
     seed: int = 42,
-    episodes: int = 750,
+    episodes: int = 3000,
     target_speeds="random",
     save_dir="runs",
     obs_dim=2,
@@ -341,7 +351,7 @@ def train_agent(
         "train_coeffs": high_speed_train_params_test,
         "track_layout": default_track_layout,
         "target_speeds": target_speeds,
-        "terminate_time": 15.0,
+        "terminate_time": 20.0,
         "interp_method": "cubic",
     }
     obs_space = env.observation_space
@@ -371,38 +381,55 @@ def train_agent(
 
 
 def train_agents(iters=10):
-    # target_speeds = {"times": [0, 5, 10, 15, 20], "speeds": [0, 10, 10, 0, 15]}
-    target_speeds = {"speeds": 10}
-    obs_dim = 3
-    best_ep_ret = -float("inf")
-    for i in range(iters):
-        print(f"Training agent {i+1}/10")
-        seed = np.random.randint(0, 200)
-        run_id = time.strftime("%Y%m%d-%H%M%S")
-        save_dir = os.path.join("runs", "history", f"{run_id}_seed_{seed}")
-        ep_return = train_agent(
-            seed=seed,
-            save_dir=save_dir,
-            is_do_test=False,
-            obs_dim=obs_dim,
-            episodes=800,
-            target_speeds=target_speeds,
-        )
-        plot_learning_curve(
-            csv_path=os.path.join(save_dir, "metrics.csv"),
-        )
-        if ep_return > best_ep_ret:
-            best_ep_ret = ep_return
-            best_save_dir = save_dir
+    target_speeds = {"times": [0, 5, 10, 15, 20], "speeds": [0, 10, 10, 0, 15]}
+    # target_speeds = {"speeds": 10}
+    # target_speeds = "random"
+    for obs_dim in [1, 4, 7]:
+        best_ep_ret = -float("inf")
+        for i in range(iters):
+            print(f"Training agent {i+1}/10")
+            seed = np.random.randint(0, 200)
+            run_id = time.strftime("%Y%m%d-%H%M%S")
+            save_dir = os.path.join(
+                "runs", "history", str(obs_dim), f"{run_id}_seed_{seed}"
+            )
+            ep_return = train_agent(
+                seed=seed,
+                save_dir=save_dir,
+                is_do_test=False,
+                obs_dim=obs_dim,
+                episodes=800,
+                target_speeds=target_speeds,
+            )
+            plot_learning_curve(
+                csv_path=os.path.join(save_dir, "metrics.csv"),
+            )
+            if ep_return > best_ep_ret:
+                best_ep_ret = ep_return
+                best_save_dir = save_dir
 
-    # Rename the best run folder by prefixing the base name with 'best_'
-    base = os.path.basename(best_save_dir)
-    new_base = f"best_{base}"
-    new_path = os.path.join(os.path.dirname(best_save_dir), new_base)
-    os.rename(best_save_dir, new_path)
-    plot_all_histories(history_dir=os.path.join(os.path.dirname(__file__), "runs", "history"))
-
+        # Rename the best run folder by prefixing the base name with 'best_'
+        base = os.path.basename(best_save_dir)
+        new_base = f"best_{base}"
+        new_path = os.path.join(os.path.dirname(best_save_dir), new_base)
+        os.rename(best_save_dir, new_path)
+        plot_learning_curve_with_shade(
+            history_dir=os.path.join(
+                os.path.dirname(__file__),
+                "runs",
+                "history",
+                str(obs_dim),
+            )
+        )
+    plot_multiple_learning_curves_with_shade(
+        set_dir=os.path.join(
+            os.path.dirname(__file__),
+            "runs",
+            "history",
+        )
+    )
     print("finished")
+
 
 def visualize_control_law(result: Dict[str, list], x_axes="time"):
     plt.style.use("dark_background")
@@ -541,14 +568,14 @@ def test_agent(ckpt_path: str = None):
 
     # target_speeds = {"speeds": 10}
 
-    target_speeds = "random"
+    # target_speeds = "random"
 
     option = {
         "train_coeffs": high_speed_train_params_test,
         "track_layout": default_track_layout,
-        "target_speeds": target_speeds,
-        "terminate_time": 50.0,
-        "interp_method": "pchip",
+        "target_speeds": TARGET_SPEEDS,
+        "terminate_time": 30.0,
+        "interp_method": "cubic",
     }
     # Reset environment
     obs, _ = env.reset(seed=42, options=option)
@@ -566,4 +593,6 @@ def test_agent(ckpt_path: str = None):
 if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
-    train_agents(10)
+    train_agent(target_speeds=TARGET_SPEEDS)
+    # test_agent()
+    

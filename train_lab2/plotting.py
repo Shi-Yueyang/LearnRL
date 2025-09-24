@@ -6,10 +6,11 @@ import matplotlib.pyplot as plt
 from typing import Tuple, List
 
 
-HISTORY = os.path.join(os.path.dirname(__file__), "runs", "set2")
+HISTORY_PATH = os.path.join(os.path.dirname(__file__), "runs", "history","7")
+SET_PATH = os.path.join(os.path.dirname(__file__), "runs", "random_speed")
 CSV_PATH = os.path.join(os.path.dirname(__file__), "runs", "history","20250921-094128","metrics.csv")
 WINDOW = 10  # episodes
-SKIP = 75
+SKIP = 1
 
 
 def load_columns(csv_path: str, cols: List[str]) -> Tuple[np.ndarray, ...]:
@@ -67,12 +68,9 @@ def plot_learning_curve(csv_path = CSV_PATH, window_size = WINDOW, skip_episodes
     plt.savefig(out_path)
     print(f"Saved plot to {out_path}")
 
-
-def plot_all_histories(history_dir = HISTORY, window_size = WINDOW, skip_episodes = SKIP):
-    # print(plt.style.available) 
+def parse_history_dir(history_dir, window_size, skip_episodes):
     # Collect CSVs from td3/runs/history. Accept both metrics.csv inside subfolders and loose CSVs.
     csvs = []
-    print(os.path.exists(history_dir))
     for root, dirs, files in os.walk(history_dir):
         for name in files:
             p = os.path.join(root, name)
@@ -87,6 +85,10 @@ def plot_all_histories(history_dir = HISTORY, window_size = WINDOW, skip_episode
             skip_episodes = 0
         total_steps = total_steps[skip_episodes:]
         ret = ret[skip_episodes:]
+        mask = abs(ret) < 1e3
+        total_steps = total_steps[mask]
+        ret = ret[mask]
+
         r_avg = rolling_mean(ret, window_size)
         xs.append(total_steps)
         ys.append(r_avg)
@@ -105,12 +107,18 @@ def plot_all_histories(history_dir = HISTORY, window_size = WINDOW, skip_episode
 
     mean = np.mean(Y, axis=0)
     std = np.std(Y, axis=0)
+    return grid, mean, std
+
+def plot_learning_curve_with_shade(history_dir = HISTORY_PATH, window_size = WINDOW, skip_episodes = SKIP):
+    # print(plt.style.available) 
+    # Collect CSVs from td3/runs/history. Accept both metrics.csv inside subfolders and loose CSVs.
+    grid, mean, std = parse_history_dir(history_dir, window_size, skip_episodes)
 
     plt.style.use('ggplot')
     fig, ax = plt.subplots(figsize=(10, 5))
 
     # Plot aggregate mean and shaded std
-    ax.plot(grid, mean, color="tab:blue", linewidth=2.0, label=f"mean (n={len(xs)})")
+    ax.plot(grid, mean, color="tab:blue", linewidth=2.0, label=f"mean")
     ax.fill_between(grid, mean - std, mean + std, color="tab:blue", alpha=0.2, label="±1 std")
 
     ax.set_xlabel("Total steps")
@@ -123,6 +131,29 @@ def plot_all_histories(history_dir = HISTORY, window_size = WINDOW, skip_episode
     plt.savefig(out_path)
     print(f"Saved plot to {out_path}")
 
+def plot_multiple_learning_curves_with_shade(set_dir=SET_PATH,window_size=WINDOW, skip_episodes=SKIP):
+    plt.style.use('ggplot')
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for subdir in os.listdir(set_dir):
+        full_path = os.path.join(set_dir, subdir)
+        if os.path.isdir(full_path):
+            grid, mean, std = parse_history_dir(full_path, window_size, skip_episodes)
+            
+            line, = ax.plot(grid, mean, linewidth=2.0, label=subdir)
+            color = line.get_color()  # get assigned color automatically
+
+            ax.fill_between(grid, mean - std, mean + std, color=color, alpha=0.2)
+            ax.legend()
+            plt.tight_layout()
+
+    ax.grid(True)
+    ax.set_xlabel("Total steps")
+    ax.set_ylabel("Return")
+    # ax.set_ylim(-10000, 2)
+    out_path = os.path.join(set_dir, "learning_curve_compare.png")
+    plt.savefig(out_path)
+    
+    print(f"Saved plot to {out_path}")
 
 if __name__ == "__main__":
-    plot_all_histories()
+    plot_multiple_learning_curves_with_shade()
