@@ -593,6 +593,6 @@ def test_agent(ckpt_path: str = None):
 if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
-    train_agent(target_speeds=TARGET_SPEEDS)
-    # test_agent()
+    # train_agent(target_speeds=TARGET_SPEEDS)
+    test_agent()
     

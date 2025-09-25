@@ -10,8 +10,10 @@ from typing import Tuple, List
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import torch
+# rm ~/.cache/matplotlib -rf
 prop = fm.FontProperties(fname="/usr/share/fonts/truetype/msttcorefonts/timesi.ttf")
 plt.rcParams['font.family'] = prop.get_name()
+plt.style.use('seaborn-v0_8-paper')
 
 from td3.train_agent import Config, Actor, Critic, ReplayBuffer, train_td3
 from follow_speed_agent3 import TrainSpeedEnv, test_control_law
@@ -97,7 +99,6 @@ def paper_plot_random_speed_learning_curve():
 
     window_size = 10
     skip_episodes = 100
-    plt.style.use('ggplot')
     fig, ax = plt.subplots(figsize=(6, 3))
     # breakpoint()
     for subdir in ['1','4','7']:
@@ -135,11 +136,14 @@ def paper_plot_track_speed():
     act_dim = ckpt["act_dim"]
     act_high = ckpt["act_high"]
     act_low = ckpt["act_low"]
+    extra_save = ckpt['extra_save']
+    err_cnt = extra_save['err_cnt']
+    ext_dim = extra_save['ext_dim']
     actor = Actor(obs_dim, act_dim, act_high, act_low).to(device)
     actor.load_state_dict(ckpt["actor"])
     print(f"load model with ep_ret {ckpt['ep_ret']:.2f}, obs_dim {obs_dim}, act_dim {act_dim}")
 
-    env = TrainSpeedEnv(obs_dim-2,2)
+    env = TrainSpeedEnv(err_cnt,ext_dim)
     target_speeds = {
         "times": [0,  3, 10, 12, 20, 25, 30],
         "speeds": [0, 10, 10, 15, 15, 5, 5],
@@ -162,26 +166,28 @@ def paper_plot_track_speed():
     positions = result["pos_history"]
     velocities = result["vel_history"]
     target_velocities = result["target_vel_history"]
-
-    plt.style.use('ggplot')
-    fig, axs = plt.subplots(1, 2, figsize=(8, 3), sharex=True)
-    axs[0].plot(time_steps, velocities, label="Actual Speed",  linewidth=2.0)
-    axs[0].plot(time_steps, target_velocities, label="Target Speed",  linestyle="--", linewidth=2.0)
+    actions = result["action_history"]
+    actions = [a/10 for a in actions]  # extract single action dimension
+    
+    fig, axs = plt.subplots(1, 2, figsize=(8, 3))
+    axs[0].plot(time_steps, velocities, label="Actual Speed",  linewidth=1.0)
+    axs[0].plot(time_steps, target_velocities, label="Target Speed",  linestyle="--", linewidth=1.0)
     axs[0].set_ylabel("Speed (m/s)")
     axs[0].legend()
     axs[0].grid(True)
     
-    axs[1].plot(positions, velocities, label="Speed Profile",  linewidth=2.0)
-    axs[1].set_xlabel("Position (m)")
-    axs[1].set_ylabel("Speed (m/s)")
+    axs[1].plot(time_steps,actions, label="Control Input", color="tab:orange", linewidth=1.0)
+    axs[1].set_ylabel("Throttle/Brake")
+    axs[1].set_ylim(-1.0, 1.0)
     axs[1].legend()
     axs[1].grid(True)
+    
     plt.tight_layout()
     out_path = os.path.join(PLOT_SAVE_DIR, "paper_track_speed.png")
     plt.savefig(out_path)
     print(f"Saved plot to {out_path}")
 
 if __name__ == "__main__":
-    paper_plot_track_speed()
+    paper_plot_random_speed_learning_curve()
     
     

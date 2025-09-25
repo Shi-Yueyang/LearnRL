@@ -38,14 +38,21 @@ from train_lab2.plotting import (
 
 # TARGET_SPEEDS = {"speeds": 10}
 # TARGET_SPEEDS = "random"
-TARGET_SPEEDS = {
-    "times": [0, 3, 10, 12, 20, 25, 30],
-    "speeds": [0, 10, 10, 15, 15, 5, 5],
-}
-# TARGET_SPEEDS = [generate_random_target_speeds(20.0, num_points=4) for _ in range(3)]
+# TARGET_SPEEDS = {
+#     "times": [0, 3, 10, 12, 20, 25, 30],
+#     "speeds": [0, 30, 30, 45, 45, 30, 30],
+# }
 
-EPISODE_LENGTH = 30
-EPISODES = 50
+# TARGET_SPEEDS = {
+#     "times": [0, 5, 10, 15, 30],
+#     "speeds": [0, 30, 30, 50, 30],
+# }
+
+# TARGET_SPEEDS = [generate_random_target_speeds(20.0, num_points=4) for _ in range(3)]
+TARGET_SPEEDS = {"times": [0, 10, 15, 20], "speeds": [0, 10, 10, 25]}
+
+EPISODE_LENGTH = 20
+EPISODES = 5000
 INTERP_METHOD = "cubic"
 
 
@@ -201,9 +208,9 @@ class TrainSpeedEnv(gym.Env):
 
         # --- Action penalties ---
         action_change = action - self.previous_action
-        action_smoothness_penalty = -0.02 * (action_change**2)
+        action_smoothness_penalty = -0.05 * (action_change**2)
 
-        survive_reward = 0.1
+        survive_reward = 0.2
         self.previous_action = action
 
         return velocity_reward + survive_reward
@@ -219,14 +226,10 @@ class TrainSpeedEnv(gym.Env):
         target_speed = self.get_target_speed()
 
         velocity_error = abs(vel - target_speed)
-        max_allowed_error = 10.0
-        # max_allowed_error = max(10.0, abs(target_speed) * 3)
+        max_allowed_error = max(10.0, abs(target_speed) * 0.5)
 
-        if velocity_error > max_allowed_error and time > 5:
+        if velocity_error > max_allowed_error and time > 2.0:
             return True
-
-        # if target_speed > 1.0 and vel < -1.0:
-        #     return True
 
         return False
 
@@ -337,7 +340,7 @@ def train_agent(
     target_critic.load_state_dict(critic.state_dict())
     buffer = ReplayBuffer(cfg.buffer_size, (obs_dim,), act_dim)
 
-    extra_save={'err_cnt':err_cnt, 'ext_dim':ext_dim}
+    extra_save = {"err_cnt": err_cnt, "ext_dim": ext_dim}
     try:
         return train_td3(
             cfg,
@@ -349,7 +352,7 @@ def train_agent(
             buffer,
             device,
             env_option,
-            extra_save
+            extra_save,
         )
     except KeyboardInterrupt:
         print("Training interrupted by user")
@@ -525,10 +528,10 @@ def test_agent(ckpt_path: str = None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     obs_dim = ckpt["obs_dim"]
-    extra_save = ckpt['extra_save']
+    extra_save = ckpt["extra_save"]
 
-    err_cnt = extra_save['err_cnt']
-    ext_dim = extra_save['ext_dim']
+    err_cnt = extra_save["err_cnt"]
+    ext_dim = extra_save["ext_dim"]
 
     act_dim = ckpt["act_dim"]
     act_high = ckpt["act_high"]
@@ -537,7 +540,7 @@ def test_agent(ckpt_path: str = None):
     actor.load_state_dict(ckpt["actor"])
     print(f"load model with ep_ret {ckpt['ep_ret']:.2f}")
 
-    env = TrainSpeedEnv(err_cnt,ext_dim)
+    env = TrainSpeedEnv(err_cnt, ext_dim)
     # and smooth methods: 'pchip', 'cubic', 'univariate', 'akima'
 
     option = {
@@ -563,5 +566,5 @@ def test_agent(ckpt_path: str = None):
 if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
-    train_agent(err_cnt=2, ext_dim=2)
-    # test_agent()
+    # train_agent(err_cnt=1, ext_dim=0)
+    test_agent()
