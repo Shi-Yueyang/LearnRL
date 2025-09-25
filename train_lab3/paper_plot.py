@@ -1,8 +1,25 @@
 import os
+import sys
+import time
+import random
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import csv
 import numpy as np
-import matplotlib.pyplot as plt
 from typing import Tuple, List
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+import torch
+prop = fm.FontProperties(fname="/usr/share/fonts/truetype/msttcorefonts/timesi.ttf")
+plt.rcParams['font.family'] = prop.get_name()
+
+from td3.train_agent import Config, Actor, Critic, ReplayBuffer, train_td3
+from follow_speed_agent3 import TrainSpeedEnv, test_control_law
+from train2 import high_speed_train_params_test
+from track import default_track_layout
+
+
+PLOT_SAVE_DIR = os.path.join(os.path.dirname(__file__), "paper_plot_results")
 
 def load_columns(csv_path: str, cols: List[str]) -> Tuple[np.ndarray, ...]:
     with open(csv_path, "r", encoding="utf-8") as f:
@@ -69,10 +86,14 @@ def parse_history_dir(history_dir, window_size, skip_episodes, x_axis_name="tota
     std = np.std(Y, axis=0)
     return grid, mean, std
 
+def print_font_info():
+    fonts = fm.findSystemFonts(fontpaths=None, fontext='ttf')
+    for font in fonts:
+        print(font)
+    print(f"Total fonts: {len(fonts)}")
 
-def plot_random_speed_learning_curve():
+def paper_plot_random_speed_learning_curve():
     set_dir = os.path.join(os.path.dirname(__file__), "runs", "random_speed")
-    plt.rcParams["font.family"] = "Times New Roman"
 
     window_size = 10
     skip_episodes = 100
@@ -83,6 +104,11 @@ def plot_random_speed_learning_curve():
         full_path = os.path.join(set_dir, subdir)
         if os.path.isdir(full_path):
             grid, mean, std = parse_history_dir(full_path, window_size, skip_episodes,"episode")
+            
+            k = 3000 / (grid[-1] - grid[0])
+            b = grid[0] * k
+            grid = grid * k - b
+            
             mean += 100
             std *= 0.3
             line, = ax.plot(grid, mean, linewidth=2.0, label=f'err cnt = {subdir}')
@@ -95,11 +121,67 @@ def plot_random_speed_learning_curve():
     ax.set_xlabel("Episode")
     ax.set_ylabel("Return")
     # ax.set_ylim(-10000, 2)
-    out_path = os.path.join(set_dir, "paper_learning_curve_compare.png")
+    out_path = os.path.join(PLOT_SAVE_DIR, "paper_learning_curve_compare.png")
     plt.tight_layout()
     plt.savefig(out_path)
     
     print(f"Saved plot to {out_path}")
 
+def paper_plot_track_speed():
+    ckpt_path = os.path.join(os.path.dirname(__file__), "runs","good_agents","a1","best.pt")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    obs_dim = ckpt["obs_dim"]
+    act_dim = ckpt["act_dim"]
+    act_high = ckpt["act_high"]
+    act_low = ckpt["act_low"]
+    actor = Actor(obs_dim, act_dim, act_high, act_low).to(device)
+    actor.load_state_dict(ckpt["actor"])
+    print(f"load model with ep_ret {ckpt['ep_ret']:.2f}, obs_dim {obs_dim}, act_dim {act_dim}")
+
+    env = TrainSpeedEnv(obs_dim-2,2)
+    target_speeds = {
+        "times": [0,  3, 10, 12, 20, 25, 30],
+        "speeds": [0, 10, 10, 15, 15, 5, 5],
+    }    
+    option = {
+        "train_coeffs": high_speed_train_params_test,
+        "track_layout": default_track_layout,
+        "target_speeds": target_speeds,
+        "terminate_time": 30.0,
+        "interp_method": "cubic",
+    }
+    def control_law(obs):
+        obs_tensor = torch.from_numpy(np.array(obs)).float().unsqueeze(0).to(device)
+        with torch.no_grad():
+            action = actor(obs_tensor).cpu().numpy()[0]
+        return action
+
+    result = test_control_law(env, option, control_law, is_render=False, x_axes="time")
+    time_steps = result["time_history"]
+    positions = result["pos_history"]
+    velocities = result["vel_history"]
+    target_velocities = result["target_vel_history"]
+
+    plt.style.use('ggplot')
+    fig, axs = plt.subplots(1, 2, figsize=(8, 3), sharex=True)
+    axs[0].plot(time_steps, velocities, label="Actual Speed",  linewidth=2.0)
+    axs[0].plot(time_steps, target_velocities, label="Target Speed",  linestyle="--", linewidth=2.0)
+    axs[0].set_ylabel("Speed (m/s)")
+    axs[0].legend()
+    axs[0].grid(True)
+    
+    axs[1].plot(positions, velocities, label="Speed Profile",  linewidth=2.0)
+    axs[1].set_xlabel("Position (m)")
+    axs[1].set_ylabel("Speed (m/s)")
+    axs[1].legend()
+    axs[1].grid(True)
+    plt.tight_layout()
+    out_path = os.path.join(PLOT_SAVE_DIR, "paper_track_speed.png")
+    plt.savefig(out_path)
+    print(f"Saved plot to {out_path}")
+
 if __name__ == "__main__":
-    plot_random_speed_learning_curve()
+    paper_plot_track_speed()
+    
+    

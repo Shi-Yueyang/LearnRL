@@ -8,9 +8,9 @@ from typing import Tuple, List
 
 HISTORY_PATH = os.path.join(os.path.dirname(__file__), "runs", "history","7")
 SET_PATH = os.path.join(os.path.dirname(__file__), "runs", "history")
-CSV_PATH = os.path.join(os.path.dirname(__file__), "runs", "history","20250921-094128","metrics.csv")
+CSV_PATH = os.path.join(os.path.dirname(__file__), "runs", "good_agents","a1","metrics.csv")
 WINDOW = 10  # episodes
-SKIP = 200
+SKIP = 0
 X_AXIS_NAME = "episode"  # total_steps or episode
 
 def load_columns(csv_path: str, cols: List[str]) -> Tuple[np.ndarray, ...]:
@@ -78,7 +78,7 @@ def parse_history_dir(history_dir, window_size, skip_episodes, x_axis_name="tota
     return grid, mean, std
 
 
-def plot_learning_curve(csv_path = CSV_PATH, window_size = WINDOW, skip_episodes = SKIP):
+def plot_learning_curve(csv_path = CSV_PATH, window_size = WINDOW, skip_episodes = SKIP, x_axis_name = X_AXIS_NAME):
     # Resolve CSV path: prefer local train_lab2/runs/metrics.csv, else fallback to td3/runs/metrics.csv
     
     episode, total_steps, ret = load_columns(csv_path, ["episode", "total_steps", "return"])
@@ -88,17 +88,20 @@ def plot_learning_curve(csv_path = CSV_PATH, window_size = WINDOW, skip_episodes
     total_steps = total_steps[skip_episodes:]
     ret = ret[skip_episodes:]
 
-    x = total_steps
+    x = total_steps if x_axis_name == "total_steps" else episode
+    mask = abs(ret) < 1e3
+    x = x[mask]
+    ret = ret[mask]
+    
     r_avg = rolling_mean(ret, window_size)
 
     plt.style.use("seaborn-v0_8-darkgrid")
-    fig, ax = plt.subplots(figsize=(10, 5))
+    fig, ax = plt.subplots(figsize=(8, 4))
     ax.plot(x, ret, color="tab:gray", alpha=0.25, label="return (per episode)")
     ax.plot(x, r_avg, color="tab:blue", linewidth=1.8, label=f"rolling mean {window_size}")
 
-    ax.set_xlabel("Total steps")
+    ax.set_xlabel(x_axis_name)
     ax.set_ylabel("Return")
-    ax.set_title(f"TD3 learning curve\n{os.path.basename(csv_path)}")
     ax.legend()
     ax.grid(True)
     plt.tight_layout()
@@ -156,4 +159,4 @@ def plot_multiple_learning_curves_with_shade(set_dir=SET_PATH,window_size=WINDOW
     print(f"Saved plot to {out_path}")
 
 if __name__ == "__main__":
-    plot_multiple_learning_curves_with_shade()
+    plot_learning_curve()
