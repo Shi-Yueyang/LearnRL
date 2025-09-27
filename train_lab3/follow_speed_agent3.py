@@ -14,12 +14,6 @@ import matplotlib.pyplot as plt
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from scipy.interpolate import (
-    PchipInterpolator,
-    CubicSpline,
-    UnivariateSpline,
-    Akima1DInterpolator,
-)
 import torch
 
 from train2 import Train2
@@ -27,9 +21,9 @@ from train2 import Train2
 
 from td3.train_agent import Config, Actor, Critic, ReplayBuffer, train_td3
 from track import Track
-from train_lab2.train2 import high_speed_train_params_test
+from train2 import high_speed_train_params_test
 from track import default_track_layout
-from train_lab2.plotting import (
+from plotting import (
     plot_learning_curve_with_shade,
     plot_learning_curve,
     plot_multiple_learning_curves_with_shade,
@@ -39,19 +33,19 @@ from train_lab2.plotting import (
 # TARGET_SPEEDS = {"speeds": 10}
 # TARGET_SPEEDS = "random"
 # TARGET_SPEEDS = {
-#     "times": [0, 3, 10, 12, 20, 25, 30],
-#     "speeds": [0, 30, 30, 45, 45, 30, 30],
+#     "times": [0, 5, 10, 15, 20, 25, 30],
+#     "speeds": [0, 30, 0, 20, 0, 30, 0],
 # }
 
 # TARGET_SPEEDS = {
-#     "times": [0, 5, 10, 15, 30],
-#     "speeds": [0, 30, 30, 50, 30],
+#     "times": [0, 5, 10, 15, 20, 25, 30],
+#     "speeds": [0, 30, 30, 50, 30, 0, 0],
 # }
 
-# TARGET_SPEEDS = [generate_random_target_speeds(20.0, num_points=4) for _ in range(3)]
-TARGET_SPEEDS = {"times": [0, 10, 15, 20], "speeds": [0, 10, 10, 25]}
+TARGET_SPEEDS = [generate_random_target_speeds(30.0, num_points=4) for _ in range(2)]
+# TARGET_SPEEDS = {"times": [0, 10, 15, 20], "speeds": [0, 10, 10, 25]}
 
-EPISODE_LENGTH = 20
+EPISODE_LENGTH = 30
 EPISODES = 5000
 INTERP_METHOD = "cubic"
 
@@ -93,6 +87,11 @@ class TrainSpeedEnv(gym.Env):
         self.target_speeds = options["target_speeds"]
         self.terminate_time = options["terminate_time"]
 
+        self.train.position = options.get("start_pos", 0.0)
+        self.train.velocity = options.get("start_vel", 0.0)
+        self.train.time = options.get("start_time", 0.0)
+
+        
         # Interpolation method: 'linear', 'nearest', 'previous'/'zoh', 'next',
         # and smooth methods: 'pchip', 'cubic', 'univariate', 'akima'
         self.interp_method = options.get("interp_method", "linear")
@@ -184,7 +183,7 @@ class TrainSpeedEnv(gym.Env):
         pos, vel, acc, time = self.state
 
         track_props = self.track.get_current_properties(train_position=pos)
-        extend_obs = [acc, vel, track_props["gradient"], track_props["curve_radius"]]
+        extend_obs = [vel, acc, track_props["gradient"], track_props["curve_radius"]]
         extend_obs = extend_obs[: self.extend_dim]
 
         target_speed = self.get_target_speed()
@@ -200,7 +199,7 @@ class TrainSpeedEnv(gym.Env):
         # --- Tracking ---
         velocity_error = abs(vel - target_speed)
 
-        velocity_reward = -((velocity_error / (abs(target_speed) + 1e-3)) ** 2)
+        velocity_reward = -((velocity_error / (abs(target_speed) + 1)) ** 2)
 
         # velocity_reward = (
         #     -((velocity_error) ** 2) / 500.0
@@ -226,7 +225,7 @@ class TrainSpeedEnv(gym.Env):
         target_speed = self.get_target_speed()
 
         velocity_error = abs(vel - target_speed)
-        max_allowed_error = max(10.0, abs(target_speed) * 0.5)
+        max_allowed_error = max(2.0, abs(target_speed) * 0.5)
 
         if velocity_error > max_allowed_error and time > 2.0:
             return True
@@ -239,6 +238,8 @@ class TrainSpeedEnv(gym.Env):
             "steps": self.steps,
             "position": self.state[0],
             "velocity": self.state[1],
+            "acceleration": self.state[2],
+            "time": self.state[3],
         }
 
     def render(self):
@@ -252,11 +253,11 @@ class TrainSpeedEnv(gym.Env):
 
 
 def test_env():
-    from train_lab2.train2 import high_speed_train_params_test
+    from train2 import high_speed_train_params_test
     from track import default_track_layout
 
     """Test the custom environment"""
-    env = TrainSpeedEnv()
+    env = TrainSpeedEnv(err_cnt=1, ext_dim=3)
 
     target_speeds = {"times": [0, 5, 10, 15, 20], "speeds": [0, 10, 10, 0, 15]}
     option = {
@@ -271,30 +272,37 @@ def test_env():
     print(f"Initial observation: {obs}")
 
     # Run a few steps
-    for i in range(10):
+    for action in np.linspace(10, -10, num=30):
         # Random action
-        action = env.action_space.sample()
-        action = action
+        if action < 0:
+            pass
         obs, reward, terminated, truncated, info = env.step(action)
-
         print(
-            f"Step {i+1}: action={action}, obs= {  '|'.join([f'{ob:.1f}' for ob in obs[-4:-1] ]) }, reward={reward:.3f}"
+            f"action={action:.1f}, obs= {  '|'.join([f'{ob:.1f}' for ob in obs ]) }, reward={reward:.3f}, obs=[ {' '.join([f'{v:.1f}' for v in obs])} ]"
         )
 
-        if terminated:
-            print("Episode terminated!")
-            break
-        if truncated:
-            print("Episode truncated!")
-            break
     env.close()
+
+
+def option_change_cb(env_option: Dict, mean_return):
+    # Example: If mean return is below a threshold, change target speeds
+    if mean_return > 30:
+        target_speeds = env_option["target_speeds"]
+        speeds = target_speeds["speeds"]
+        new_speeds = [max(0, s + random.uniform(-5, 5)) for s in speeds]
+        env_option["target_speeds"]["speeds"] = new_speeds
+        print(
+            f"Changed target speeds to: [ {' '.join([f'{s:.1f}' for s in new_speeds])} ]"
+        )
+        return True
+    return False
 
 
 def train_agent(
     seed: int = 42,
     save_dir="runs",
     err_cnt=2,
-    ext_dim=2,
+    ext_dim=1,
     is_do_test=True,
 ):
     cfg = Config()
@@ -304,7 +312,7 @@ def train_agent(
     cfg.noise_std = 10
     cfg.noise_std_final = 0.1
     cfg.start_random_episodes = 30
-    cfg.batch_size = 128
+    cfg.batch_size = 300
     cfg.log_interval = 10
     cfg.seed = seed
     cfg.save_dir = save_dir
@@ -353,6 +361,7 @@ def train_agent(
             device,
             env_option,
             extra_save,
+            # option_change_cb,
         )
     except KeyboardInterrupt:
         print("Training interrupted by user")
@@ -566,5 +575,9 @@ def test_agent(ckpt_path: str = None):
 if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
-    # train_agent(err_cnt=1, ext_dim=0)
-    test_agent()
+
+    train_agent(err_cnt=3, ext_dim=0)
+
+    # test_agent()
+
+    test_env()

@@ -9,7 +9,7 @@ from scipy.interpolate import (
 def generate_random_target_speeds(terminate_time, num_points=4):
     time_points = np.sort(np.random.uniform(0, terminate_time, size=num_points))
     speed_points = np.random.uniform(0, 50, size=num_points)
-    speed_points[2] = speed_points[1]  # Make middle two speeds equal for flat section
+    speed_points[0] = 0.0  # start from 0
     return {"times": time_points.tolist(), "speeds": speed_points.tolist()}
 
 

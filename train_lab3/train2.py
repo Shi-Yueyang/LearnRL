@@ -76,7 +76,8 @@ class Train2:
             brake_force = 0.0
         
         f_resistance = self.calculate_resistance_forces(self.velocity, track_props, track)
-        f_net = throttle_force + brake_force - f_resistance
+        f_net = throttle_force + brake_force + f_resistance*(-1 if self.velocity>=0 else 1)
+
         acceleration = f_net / self.m
         self.velocity += acceleration * dt
         self.position += self.velocity * dt + 0.5 * acceleration * dt**2
@@ -92,7 +93,7 @@ high_speed_train_params_test = {
     "c1": 2700,  # Rolling resistance is significant
     "c2": 100,  # Velocity-based resistance is low
     "c3": 7.1,  # Small coefficient for quadratic drag
-    "max_brake_force": 1_000_000,  # 1,000 kN (limited by momentum)
+    "max_brake_force": 25_000_000,  # 1,000 kN (limited by momentum)
     "max_tractive_force": 25_000_000,  # 1,500 kN (very high for starting)
     "max_velocity": 83.33,  # 300 km/h in m/s
 }

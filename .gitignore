@@ -30,6 +30,7 @@ pip-wheel-metadata/
 *.ckpt
 **/runs/
 **/runs/*
+**/results/*
 
 # Media and recordings
 *.mp4

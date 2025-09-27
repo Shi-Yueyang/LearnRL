@@ -23,21 +23,21 @@ class Config:
     seed: int = 42
     episodes: int = 500
     max_episode_steps: int = 500
+    start_random_episodes: int = 10
+    policy_delay: int = 2
+    updates_per_step: int = 1
     gamma: float = 0.99
     tau: float = 0.005  # soft update coef
-    policy_delay: int = 2
     policy_noise: float = 0.2
     noise_clip: float = 0.5
-    buffer_size: int = 300_000
-    batch_size: int = 256
     actor_lr: float = 1e-3
     critic_lr: float = 1e-3
-    start_random_episodes: int = 10
     action_noise_std: float = 0.2
     action_noise_final: float = 0.05
     action_noise_decay_episodes: int = 400
+    batch_size: int = 256
+    buffer_size: int = 300_000
     min_buffer: int = 5_000
-    updates_per_step: int = 1
     log_interval: int = 10
     # logging
     save_dir: str = "runs"
@@ -142,6 +142,10 @@ class ReplayBuffer:
             torch.from_numpy(self.next_obs[idxs]),
             torch.from_numpy(self.dones[idxs].astype(np.float32)),
         )
+
+    def clear(self):
+        self.idx = 0
+        self.full = False
 
 
 def soft_update(src: nn.Module, dst: nn.Module, tau: float):
@@ -336,11 +340,13 @@ def train_td3(
     device,
     env_option=None,
     extra_save=None,
+    option_change_cb=None,
 ) -> float:
     actor_opt = torch.optim.Adam(actor.parameters(), lr=cfg.actor_lr)
     critic_opt = torch.optim.Adam(critic.parameters(), lr=cfg.critic_lr)
 
     recent_returns = deque(maxlen=50)
+    recent_steps = deque(maxlen=50)
     start_time = time.time()
     rng = np.random.default_rng(cfg.seed)
     best_mean_return = -1e9
@@ -448,13 +454,22 @@ def train_td3(
                         # critic update already counted in ep_metrics
 
             recent_returns.append(ep_ret)
+            recent_steps.append(steps)
             mean_return = float(np.mean(recent_returns))
+            mean_steps = float(np.mean(recent_steps))
+
+
             wall = time.time() - start_time
             if ep == 1 or (ep % cfg.log_interval == 0 and wall - last_print_time > 1):
                 last_print_time = wall
                 print(
-                    f"Ep {ep}/{cfg.episodes} | Steps {steps} | Ret {ep_ret:.1f} | Mean50 {mean_return:.1f} | Buffer {len(buffer)} | Critic loss {critic_loss_val:.2f}"
+                    f"Ep {ep}/{cfg.episodes} | Steps {steps} | Ret {ep_ret:.1f} | MeanRet {mean_return:.1f} | MeanSteps {mean_steps:.1f} | Buffer {len(buffer)} | Critic loss {critic_loss_val:.1f}"
                 )
+            if option_change_cb is not None and len(recent_returns) == recent_returns.maxlen:
+                if option_change_cb(env_option, mean_return):
+                    recent_returns.clear()
+                    recent_steps.clear()
+                    buffer.clear()
 
             # Log to CSV/TensorBoard
             ep_summary = ep_metrics.finalize(steps)
@@ -462,7 +477,8 @@ def train_td3(
                 {
                     "episode": ep,
                     "return": float(ep_ret),
-                    "mean50": mean_return,
+                    "mean_ret": mean_return,
+                    "mean_steps": mean_steps,
                     "steps": steps,
                     "total_steps": total_steps,
                     "buffer_size": len(buffer),
@@ -494,7 +510,7 @@ def train_td3(
                     "episode": ep,
                     "cfg": cfg.as_dict(),
                     "act_high": env.action_space.high,
-                    "extra_save":extra_save
+                    "extra_save": extra_save,
                 }
                 # Save to run-specific dir
                 torch.save(payload, os.path.join(cfg.save_dir, cfg.save_file))
@@ -504,6 +520,7 @@ def train_td3(
 
     print(f"Training complete. Best mean return {best_mean_return:.2f}")
     return best_mean_return
+
 
 def main():
     cfg = Config()
